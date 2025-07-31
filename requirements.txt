@@ -1,2 +1,5 @@
-matplotlib
+pytest
+pandas
+dask[dataframe]
 tqdm
+numpy

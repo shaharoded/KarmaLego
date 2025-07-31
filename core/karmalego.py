@@ -3,12 +3,7 @@ from tqdm import tqdm
 import numpy as np
 from functools import wraps
 
-from core.utils import (
-    temporal_relations,
-    lexicographic_sorting,
-    find_all_possible_extensions,
-    equal_TIRPs
-)
+from core.utils import *
 
 # basic logger setup (only once)
 logging.basicConfig(level=logging.INFO)
@@ -23,8 +18,10 @@ def log_execution(func):
         return result
     return wrapper
 
+
 class SchemaValidationError(Exception):
     pass
+
 
 class TreeNode:
     """
@@ -133,103 +130,197 @@ class TreeNode:
         for node in sorted(all_nodes, reverse=True):
             print(node, end="")
         print("\n\nAll TIRP nodes: ", len(all_nodes))
-
+    
 
 class TIRP:
     """
-    Representation of Time Interval Relation Pattern (TIRP) with two lists.
-    Implementation of basic methods to work with TIRPs.
+    Time Interval Relation Pattern (TIRP).
+
+    Encapsulates a pattern defined by a sequence of symbols and their pairwise temporal relations,
+    along with mechanisms to compute and track vertical support (which entities support the pattern),
+    and provide deterministic equality/hash for deduplication in candidate enumeration.
+
+    Attributes
+    ----------
+    epsilon : temporal tolerance used when comparing interval endpoints.
+    max_distance : maximum gap between intervals to consider influence.
+    min_ver_supp : threshold in range [0,1] for minimum vertical support to consider a pattern frequent.
+    symbols : list of symbol identifiers (typically hashed concept names) in lexicographic order.
+    relations : flat list representing the upper-triangular matrix of Allen-like relations between symbols.
+    k : length of the pattern (number of symbols).
+    vertical_support : computed support (fraction of entities supporting this TIRP).
+    entity_indices_supporting : list of original entity indices that support this TIRP.
+    parent_entity_indices_supporting : if extension of a parent, the parent-supporting indices to restrict search.
+    indices_of_last_symbol_in_entities : for each supporting entity, the index of the last symbol in its embedding.
+    _hash_cache : cached hash value to avoid recomputing in repeated set/dict usage.
     """
 
-    def __init__(self, epsilon, max_distance, min_ver_supp, symbols=None, relations=None, k=1, vertical_support=None,
-                 indices_supporting=None, parent_indices_supporting=None, indices_of_last_symbol_in_entities=None):
-        """
-        Initialize TIRP instance with default or given values.
+    __slots__ = (
+        "epsilon",
+        "max_distance",
+        "min_ver_supp",
+        "symbols",
+        "relations",
+        "k",
+        "vertical_support",
+        "entity_indices_supporting",
+        "parent_entity_indices_supporting",
+        "indices_of_last_symbol_in_entities",
+        "_hash_cache",
+    )
 
-        :param epsilon: maximum amount of time between two events that we consider it as the same time
-        :param max_distance: maximum distance between two time intervals that means first one still influences the second
-        :param min_ver_supp: proportion (value between 0-1) defining threshold for accepting TIRP
-        :param symbols: list of symbols presenting entity in lexicographic order (labels for upper triangular matrix)
-        :param relations: list of Allen's temporal relations, presenting upper triangular matrix (half matrix),
-                          relations' order is by columns from left to right and from up to down in the half matrix
-        :param k: level of the TIRP in the enumeration tree
-        :param vertical_support: value of TIRP support (between 0-1)
-        :param indices_supporting: list of indices of entity list that support this TIRP
-        :param parent_indices_supporting: list of indices of entity list that support parent of this TIRP
-        :param indices_of_last_symbol_in_entities: list of indices of last element in symbols list in lexicographically ordered entities
-                                                   (len(indices_of_last_symbol_in_entities) = len(indices_supporting))
+    def __init__(self, epsilon, max_distance, min_ver_supp, symbols=None, relations=None, k=1,
+                vertical_support=None, indices_supporting=None, parent_indices_supporting=None,
+                indices_of_last_symbol_in_entities=None, validate: bool = True):
+        """
+        Initialize a TIRP.
+
+        Parameters
+        ----------
+        epsilon : numeric or timedelta-like
+            Temporal tolerance for considering two interval endpoints as meeting/close.
+        max_distance : numeric or timedelta-like
+            Maximal distance between intervals for influence; beyond this treated as no relation.
+        min_ver_supp : float
+            Minimum vertical support threshold (0 <= min_ver_supp <= 1) to deem the TIRP frequent.
+        symbols : list, optional
+            Ordered list of symbol identifiers forming the TIRP.
+        relations : list, optional
+            Flattened list of temporal relations describing pairwise relations among symbols.
+        k : int
+            Declared length of the pattern; must equal len(symbols) if symbols provided.
+        vertical_support : float, optional
+            Precomputed vertical support value; must be in [0,1] if not None.
+        indices_supporting : list of ints, optional
+            Entity indices currently supporting this TIRP.
+        parent_indices_supporting : list of ints, optional
+            Supporting indices of the parent pattern, used to restrict search.
+        indices_of_last_symbol_in_entities : list of ints, optional
+            For each supporting entity, the index of the last symbol in the matched embedding.
+        validate : bool, default=True
+            Whether to enforce consistency checks (can be disabled if caller guarantees validity).
         """
         self.epsilon = epsilon
         self.max_distance = max_distance
+
+        if validate:
+            if not (0.0 <= min_ver_supp <= 1.0):
+                raise ValueError(f"min_ver_supp must be in [0,1], got {min_ver_supp}")
         self.min_ver_supp = min_ver_supp
-        self.symbols = [] if symbols is None else symbols
-        self.relations = [] if relations is None else relations
+
+        self.symbols = [] if symbols is None else list(symbols)
+        self.relations = [] if relations is None else list(relations)
+
+        if validate:
+            if self.symbols:
+                expected_rel_len = (len(self.symbols) * (len(self.symbols) - 1)) // 2
+                if len(self.relations) != expected_rel_len:
+                    raise ValueError(
+                        f"Inconsistent TIRP: {len(self.symbols)} symbols require {expected_rel_len} relations, "
+                        f"got {len(self.relations)}"
+                    )
+            if k != len(self.symbols):
+                raise ValueError(f"k ({k}) must equal number of symbols ({len(self.symbols)})")
+
         self.k = k
+        if vertical_support is not None:
+            if validate and not (0.0 <= vertical_support <= 1.0):
+                raise ValueError(f"vertical_support must be in [0,1] if provided, got {vertical_support}")
         self.vertical_support = vertical_support
-        self.entity_indices_supporting = indices_supporting
-        self.parent_entity_indices_supporting = parent_indices_supporting
-        self.indices_of_last_symbol_in_entities = [] if indices_of_last_symbol_in_entities is None else indices_of_last_symbol_in_entities
 
-    def __repr__(self):
-        """
-        Method defining how TIRP class instance is printed to standard output.
-
-        :return: string that is printed
-        """
-        return self.print() + '\n\nVertical support: ' + str(round(self.vertical_support, 3)) + '\n\n'
-
-    def __lt__(self, other):
-        """
-        Method defining how 2 TIRPs are compared when sorting list of TIRPs.
-
-        :param other: the second TIRP that is compared to self
-        :return: boolean - True if self is less than other (in sense of their vertical support)
-        """
-        return self.vertical_support < other.vertical_support
+        # support tracking
+        self.entity_indices_supporting = [] if indices_supporting is None else list(indices_supporting)
+        self.parent_entity_indices_supporting = None if parent_indices_supporting is None else list(parent_indices_supporting)
+        self.indices_of_last_symbol_in_entities = [] if indices_of_last_symbol_in_entities is None else list(indices_of_last_symbol_in_entities)
+        self._hash_cache = None  # lazily populated
 
     def __eq__(self, other):
         """
-        Method defining equality of 2 TIRPs.
+        Equality is structural: same symbols sequence and same relations list.
 
-        :param other: the second TIRP that is compared to self
-        :return: boolean - True if TIRPS are equal, False otherwise
+        Parameters
+        ----------
+        other : any
+            Object to compare against.
+
+        Returns
+        -------
+        bool
+            True if other is a TIRP with identical symbols and relations, False otherwise.
         """
-        return are_TIRPs_equal(self, other)
+        if not isinstance(other, TIRP):
+            return False
+        return self.symbols == other.symbols and self.relations == other.relations
 
     def __hash__(self):
         """
-        Return the hash value of self object. Together with __eq__ method it is used to make list of TIRPs unique.
+        Hash based on (symbols, relations) tuple. Caches after first computation for efficiency.
 
-        :return: hash value based on symbols and relations lists and their order
+        Returns
+        -------
+        int
+            Hash value.
         """
-        return hash((sum([(i + 1) * hash(s) for i, s in enumerate(self.symbols)]), (sum([(i + 1) * hash(s) for i, s in enumerate(self.relations)]))))
+        if self._hash_cache is not None:
+            return self._hash_cache
+        sym_part = tuple(self.symbols)
+        rel_part = tuple(self.relations)
+        self._hash_cache = hash((sym_part, rel_part))
+        return self._hash_cache
+
+    def __lt__(self, other):
+        """
+        Comparison operator for sorting: uses vertical support (None treated as 0).
+        Patterns with lower support are 'less' so that sorting(reverse=True) orders high support first.
+        """
+        return (self.vertical_support or 0) < (other.vertical_support or 0)
 
     def extend(self, new_symbol, new_relations):
         """
-        Extend TIRP with a new symbol and new relations. Check if sizes of lists are ok after extending.
+        Mutably extend this TIRP by appending a symbol and corresponding relation slice.
+        Resets cached hash because the structural identity changes.
 
-        :param new_symbol: string representing new symbol to add
-        :param new_relations: list of new relations to add
-        :return: None
+        Parameters
+        ----------
+        new_symbol : hashable
+            The symbol to append (e.g., concept code).
+        new_relations : list
+            New relations to incorporate (must be consistent with upper-triangular relation encoding).
+
+        Raises
+        ------
+        AttributeError
+            If after extension the length invariants between symbols and relations are violated.
         """
         self.symbols.append(new_symbol)
         self.relations.extend(new_relations)
         if not self.check_size():
-            raise AttributeError('Extension of TIRP is wrong!')
+            raise AttributeError("Extension of TIRP is wrong!")
+        self._hash_cache = None  # invalidate cached hash
 
     def check_size(self):
         """
-        Check if length of list relations is right regarding length of list symbols.
+        Validate that the number of relations matches the expected upper-triangular size for current symbols.
 
-        :return: boolean - if size of symbols and relations lists match
+        Returns
+        -------
+        bool
+            True if relation list length is correct for current symbol count.
         """
-        return (len(self.symbols) ** 2 - len(self.symbols)) / 2 == len(self.relations)
+        expected = (len(self.symbols) * (len(self.symbols) - 1)) // 2  # integer arithmetic
+        return expected == len(self.relations)
+    
+    def __repr__(self):
+        vs = f"{self.vertical_support:.3f}" if self.vertical_support is not None else "None"
+        return f"TIRP(k={self.k}, symbols={self.symbols}, relations={self.relations}, support={vs})"
+
+    def __str__(self):
+        return self.__repr__()
 
     def print(self):
         """
-        Pretty print TIRP as upper triangular matrix.
-
-        :return: empty string because __repr__ method is using print() method
+        Pretty-print the TIRP as an upper triangular matrix (side effect: writes to stdout).
+        Maintained exactly as in baseline/reference for human inspection.
         """
         if len(self.relations) == 0:
             return
@@ -249,9 +340,9 @@ class TIRP:
             index = start_index
             for column_id in range(len(self.symbols) - 1):
                 num_of_spaces = len(self.symbols[column_id + 1]) + 2
-                if column_id < row_id:    # print spaces
+                if column_id < row_id:
                     print(' ' * (num_of_spaces + 1), end='')
-                else:   # print relation
+                else:
                     print(self.relations[index], end=' ' * num_of_spaces)
                     index += row_increment
                     row_increment += 1
@@ -267,69 +358,100 @@ class TIRP:
 
     def is_above_vertical_support(self, entity_list):
         """
-        Check if this TIRP is present in at least min_ver_supp proportion of entities.
-        Set some parameters of self instance.
+        Compute and update vertical support for this TIRP over the provided entity list.
+        “Given the set of entities (patients), how many of them contain this pattern 
+        (with the right symbol order and temporal relations)?”
 
-        :param entity_list: list of all entities
-        :return: boolean - True if given TIRP has at least min_ver_supp support, otherwise False
+        This method:
+          * Optionally restricts search to the parent-supported subset of entities (SAC-style pruning).
+          * Finds lexicographic matches of the symbol sequence inside each entity.
+          * Verifies that the temporal relations match for at least one embedding per entity.
+          * Updates internal supporting index lists and vertical support.
+
+        Parameters
+        ----------
+        entity_list : list
+            List of entities, where each entity is itself a list of tuples
+            (start, end, symbol). Symbols must align with self.symbols when matching.
+
+        Returns
+        -------
+        bool
+            True if computed vertical support >= self.min_ver_supp, False otherwise.
         """
-        if not self.check_size():
-            print('TIRP symbols and relations lists do not have compatible size!')
-            return None
-
-        # check only entities from entity list that supported parent (smaller) TIRP
+        # Apply parent-level filtering if available, with mapping to original indices.
         if self.parent_entity_indices_supporting is not None:
-            entity_list_reduced = list(np.array(entity_list)[self.parent_entity_indices_supporting])
+            reduced_indices = list(self.parent_entity_indices_supporting)
+            entity_list_reduced = [entity_list[i] for i in reduced_indices]
+            mapping_reduced_to_orig = {ri: reduced_indices[ri] for ri in range(len(reduced_indices))}
         else:
             entity_list_reduced = entity_list
+            mapping_reduced_to_orig = {i: i for i in range(len(entity_list))}
 
-        supporting_indices = []
-        for index, entity in enumerate(entity_list_reduced):
+        supporting_reduced = set()
+        last_symbol_map = {}  # original_idx -> set of last symbol positions
+
+        for reduced_idx, entity in enumerate(entity_list_reduced):
+            orig_idx = mapping_reduced_to_orig[reduced_idx]
             lexi_sorted = lexicographic_sorting(entity)
-            entity_ti = list(map(lambda s: (s[0], s[1]), lexi_sorted))
-            entity_symbols = list(map(lambda s: s[2], lexi_sorted))
-            if len(self.symbols) <= len(entity_symbols):
-                matching_indices = check_symbols_lexicographically(entity_symbols, self.symbols, 'all')
-                if matching_indices is not None and matching_indices != [None]:     # lexicographic match found, check all relations of TIRP
-                    for matching_option in matching_indices:
-                        all_relations_match = True
+            entity_ti = [(s, e) for s, e, _ in lexi_sorted]
+            entity_symbols = [sym for _, _, sym in lexi_sorted]
 
-                        relation_index = 0
-                        for column_count, entity_index in enumerate(matching_option[1:]):
-                            for row_count in range(column_count + 1):
-                                ti_1 = entity_ti[matching_option[row_count]]
-                                ti_2 = entity_ti[entity_index]
+            if len(self.symbols) > len(entity_symbols):
+                continue  # cannot embed if pattern longer than entity
 
-                                if self.relations[relation_index] != temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance):
-                                    all_relations_match = False
-                                    break
+            matching_options = check_symbols_lexicographically(entity_symbols, self.symbols)
+            if matching_options is None:
+                continue
 
-                                relation_index += 1
+            for matching_option in matching_options:
+                all_relations_match = True
+                relation_index = 0
 
-                            if not all_relations_match:
-                                break
+                # Walk the implied upper-triangular structure of relations.
+                for column_count, entity_index in enumerate(matching_option[1:]):
+                    for row_count in range(column_count + 1):
+                        ti_1 = entity_ti[matching_option[row_count]]
+                        ti_2 = entity_ti[entity_index]
+                        expected_rel = self.relations[relation_index]
+                        actual_rel = temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance)
+                        if expected_rel != actual_rel:
+                            all_relations_match = False
+                            break
+                        relation_index += 1
+                    if not all_relations_match:
+                        break
 
-                        if all_relations_match:
-                            supporting_indices.append(index)
-                            self.indices_of_last_symbol_in_entities.append(list(matching_option)[-1])
+                if all_relations_match:
+                    supporting_reduced.add(reduced_idx)
+                    last_symbol = matching_option[-1]
+                    last_symbol_map.setdefault(orig_idx, set()).add(last_symbol)
+                    break  # only one valid embedding per entity is enough
 
-        if self.parent_entity_indices_supporting is not None:
-            self.entity_indices_supporting = list(np.array(self.parent_entity_indices_supporting)[supporting_indices])
+        # Translate reduced support indices back to original entity indices
+        new_supporting = set()
+        for reduced_idx in supporting_reduced:
+            orig = mapping_reduced_to_orig[reduced_idx]
+            new_supporting.add(orig)
+        self.entity_indices_supporting = list(new_supporting)
+
+        # Align last-symbol positions with supporting entity indices
+        paired = set()
+        for orig_idx in self.entity_indices_supporting:
+            last_symbols = last_symbol_map.get(orig_idx, [])
+            for sym_idx in last_symbols:
+                paired.add((sym_idx, orig_idx))
+        if paired:
+            sym_idxs, ent_idxs = zip(*paired)
+            self.indices_of_last_symbol_in_entities = list(sym_idxs)
+            self.entity_indices_supporting = list(ent_idxs)
         else:
-            self.entity_indices_supporting = supporting_indices
+            self.indices_of_last_symbol_in_entities = []
 
-        self.vertical_support = len(list(set(self.entity_indices_supporting))) / len(entity_list)
-
-        # make 2 lists the same size by uniqueness of entity_indices_supporting
-        if len(self.entity_indices_supporting) != 0:
-            sym_index_ent_index_zipped_unique = list(set(list(zip(self.indices_of_last_symbol_in_entities, self.entity_indices_supporting))))
-            self.indices_of_last_symbol_in_entities = list(np.array(sym_index_ent_index_zipped_unique)[:, 0])
-            self.entity_indices_supporting = list(np.array(sym_index_ent_index_zipped_unique)[:, 1])
+        # Final vertical support is with respect to the full original entity list.
+        self.vertical_support = len(set(self.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
 
         return self.vertical_support >= self.min_ver_supp
-    
-
-
 
 
 
