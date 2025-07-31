@@ -6,6 +6,8 @@ Based on the paper:
 Robert Moskovitch, Yuval Shahar. *Temporal Patterns Discovery from Multivariate Time Series via Temporal Abstraction and Time-Interval Mining.*  
 (See original for theoretical grounding.)
 
+This implementation is inspired by markozeman implementation, available on this (link)[https://github.com/markozeman/KarmaLego], and is designed to be used as an analytic tool in my thesis.
+
 ---
 
 ## Overview
@@ -25,26 +27,25 @@ The design goals are: **clarity, performance, testability, and reproducibility**
 ```
 KarmaLego/
 ├── core/
-│   ├── __init__.py              # package marker
-│   ├── karmalego.py             # algorithmic core: TreeNode, TIRP, KarmaLego/Karma/Lego pipeline
-│   ├── io.py                   # ingestion / preprocessing / mapping / decoding helpers
-│   ├── relation_table.py       # temporal relation transition tables and definitions
-│   └── utils.py               # low-level helpers: temporal_relations, lexicographic sorting, embedding counting
+│   ├── __init__.py                             # package marker
+│   ├── karmalego.py                            # algorithmic core: TreeNode, TIRP, KarmaLego/Karma/Lego pipeline
+│   ├── io.py                                   # ingestion / preprocessing / mapping / decoding helpers
+│   ├── relation_table.py                       # temporal relation transition tables and definitions
+│   └── utils.py                                # low-level helpers
 ├── data/
-│   ├── synthetic_diabetes_temporal_data.csv  # example input dataset
-│   ├── symbol_map.json        # saved symbol encoding (concept:value -> int)
-│   └── inverse_symbol_map.json # reverse mapping for human-readable decoding
+│   ├── synthetic_diabetes_temporal_data.csv    # example input dataset
+│   ├── symbol_map.json                         # saved symbol encoding (concept:value -> int)
+│   └── inverse_symbol_map.json                 # reverse mapping for human-readable decoding
 ├── unittests/
-│   ├── test_treenode.py       # TreeNode behavior
-│   ├── test_tirp.py           # TIRP equality, support, relation semantics
-│   ├── test_karmalego.py      # core pipeline / small synthetic pattern discovery
-│   └── test_discover.py       # discovery/application integration tests (example)
-├── main.py                    # example end-to-end driver / demo script
-├── pyproject.toml            # editable installation manifest
-├── pytest.ini               # pytest configuration
-├── requirements.txt         # pinned dependencies (pandas, dask, tqdm, pytest, numpy, etc.)
-├── README.md                # human-readable version of this document
-└── .gitignore               # ignored files for git
+│   ├── test_treenode.py                        # TreeNode behavior
+│   ├── test_tirp.py                            # TIRP equality, support, relation semantics
+│   └── test_karmalego.py                       # core pipeline / small synthetic pattern discovery
+├── main.py                                     # example end-to-end driver / demo script
+├── pyproject.toml                              # editable installation manifest
+├── pytest.ini                                  # pytest configuration
+├── requirements.txt                            # pinned dependencies (pandas, dask, tqdm, pytest, numpy, etc.)
+├── README.md                                   # human-readable version of this document
+└── .gitignore                                  # ignored files for git
 ```
 
 ---
@@ -59,11 +60,9 @@ Use a virtual environment:
 python -m venv .venv
 # Windows:
 .\.venv\Scripts\activate
-# macOS / Linux:
-source .venv/bin/activate
 
 pip install -e .
-pip install -r requirements.txt
+pip install -r requirements.txt pytest
 ```
 
 The `-e .` makes the local package importable as `core.karmalego` during development.
@@ -76,9 +75,11 @@ Input must be a table (CSV or DataFrame) with these columns:
 
 - `PatientID` : identifier per entity (patient)
 - `ConceptName` : event or concept (e.g., lab test name)
-- `StartDateTime` : interval start (e.g., `"08/01/2023 0:00"` in `DD/MM/YYYY H:MM`)
+- `StartDateTime` : interval start (e.g., `"08/01/2023 00:00"` in `DD/MM/YYYY HH:MM`)
 - `EndDateTime` : interval end (same format)
 - `Value` : discrete value or category (e.g., `'High'`, `'Normal'`)
+
+You have full flexibility to affect the input and output shapes and formats in the `io.py` module, as long as you maintain this general structure.
 
 Example row:
 ```
@@ -222,7 +223,7 @@ wide = df_vec.pivot(index="PatientID", columns="Pattern", values="Value").fillna
 
 ## Next Steps / Extensions
 
+- Add better prunning using the parent link in each node  
+- Can this be calculated lazily? Can data be loaded in chunks or can process be parallel? 
 - Add support for filtering patterns by length, closure (closed/superpatterns), or domain importance.  
-- Persist learned patterns as a reusable library for scoring new patients.  
-- Integrate with downstream fairness / diversity scoring on the patient-pattern matrix.  
-- Wrap as a CLI with flag-configurable parameters for batch runs.
+- Persist learned patterns as a reusable library for scoring new patients. 
