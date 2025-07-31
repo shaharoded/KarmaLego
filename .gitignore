@@ -1,0 +1,17 @@
+karmalego_ref.py
+clustering.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+env/
+venv/
+
+# pytest cache
+.pytest_cache/
+
+# Editor
+.vscode/
+*.swp

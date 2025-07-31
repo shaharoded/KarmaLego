@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=65.5.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "karmalego"
+version = "0.1.0"
+description = "KarmaLego pattern mining tool"
+authors = [
+  { name = "Shahar Oded", email = "odedshah@post.bgu.ac.il" }
+]
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*"]
