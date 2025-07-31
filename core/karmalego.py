@@ -570,13 +570,15 @@ class KarmaLego:
 
         # Log timings
         total = time.perf_counter() - t0
+        SECONDS_PER_MINUTE = 60.0
         logger.info(
-            "discover_patterns timings (s): precompute=%.4f karma=%.4f lego=%.4f flatten=%.4f total=%.4f",
-            t_pre_end - t_pre_start,
-            t_karma_end - t_karma_start,
-            t_lego_end - t_lego_start,
-            t_flatten_end - t_flatten_start,
-            total,
+            "discover_patterns timings (min): precompute=%.4f karma=%.4f lego=%.4f "
+            "flatten=%.4f total=%.4f",
+            (t_pre_end   - t_pre_start)  / SECONDS_PER_MINUTE,
+            (t_karma_end - t_karma_start) / SECONDS_PER_MINUTE,
+            (t_lego_end  - t_lego_start)  / SECONDS_PER_MINUTE,
+            (t_flatten_end - t_flatten_start) / SECONDS_PER_MINUTE,
+            total / SECONDS_PER_MINUTE,
         )
 
         outputs = (df,)
