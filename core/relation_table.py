@@ -77,4 +77,7 @@ def compose_relation(ar_b, b_r_c):
     Safe composition: given (A r B) and (B r C), return possible A r C relations.
     Returns empty list if the pair is not defined.
     """
-    return _transition_table.get((ar_b, b_r_c), [])
+    key = (ar_b, b_r_c)
+    if key not in _transition_table:
+        raise KeyError("Missing transition table entry for %s", key)
+    return _transition_table[key]

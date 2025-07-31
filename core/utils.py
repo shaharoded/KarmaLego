@@ -1,3 +1,4 @@
+from copy import deepcopy
 from core.relation_table import compose_relation
 
 
@@ -80,47 +81,59 @@ def check_symbols_lexicographically(entity_symbols, pattern_symbols):
     return results if results else None
 
 
-def find_all_possible_extensions(all_paths, BrC, curr_rel_index, decrement_index, TIRP_relations):
+def find_all_possible_extensions(all_paths, path, BrC, curr_rel_index, decrement_index, TIRP_relations):
     """
-    Compute all valid predecessor relation sequences needed when extending a TIRP by a new symbol.
+    Backward-backtracks to enumerate all valid predecessor relation sequences needed when extending a TIRP.
 
-    Recursive backtracking over the flattened upper-triangular relation list.
-    Given the relation between the previous last symbol (B) and the new symbol (C) (BrC),
-    it walks backwards, composing relations via the composition table to enumerate all
-    consistent sequences of preceding relations.
+    Given the new-last relation (BrC) between the previous symbol and the candidate extension symbol,
+    this recursively walks backward over the flattened upper-triangular relation list of the base TIRP,
+    composing relations via the composition table to produce all sequences of preceding relations that
+    keep the extended pattern consistent.
 
     Parameters
     ----------
-    all_paths : list
-        Accumulator to which each completed predecessor path is appended (excluding BrC).
+    all_paths : list[list]
+        Mutable accumulator. Each time a full consistent predecessor sequence is found (i.e., the
+        backward walk reaches before the start), a copy of the current `path` (excluding BrC) is appended.
+    path : list
+        Working buffer of predecessor relations collected so far. Modified in-place during recursion
+        (appended before descent, popped after).
     BrC : hashable
-        Relation between the previous last symbol (B) and the new symbol (C).
+        Relation between the previous last symbol B and the new symbol C being added.
     curr_rel_index : int
-        Current index in TIRP_relations (working backwards).
+        Current index into `TIRP_relations` from which to step backward.
     decrement_index : int
-        Controls how far to step backwards in the flattened upper-triangular layout.
+        Controls how far to jump the next index backward; reflects the structure of the flattened
+        upper-triangular representation (and is decremented per level).
     TIRP_relations : list
-        Existing relations of the base TIRP (flattened upper-triangular order).
+        Flattened list of existing relations of the base TIRP in upper-triangular order.
 
     Returns
     -------
-    list
-        The same all_paths passed in, extended with each valid list of predecessor relations.
+    list[list]
+        Same object as `all_paths`, extended in-place with each valid predecessor relation sequence.
+        Each inner list contains relations that precede `BrC` (does not include `BrC` itself).
     """
-    def dfs(ci, di, brc, path):
-        if ci < 0:
-            all_paths.append(path.copy())
-            return
-        ArB = TIRP_relations[ci]
-        poss_relations = compose_relation(ArB, brc)
-        if not poss_relations:
-            return  # dead end
-        for poss_rel in poss_relations:
-            next_ci = ci - di - 1
-            next_di = di - 1
-            dfs(next_ci, next_di, poss_rel, path + [poss_rel])
+    if curr_rel_index < 0:
+        all_paths.append(deepcopy(path))
+        return
 
-    dfs(curr_rel_index, decrement_index, BrC, [])
+    ArB = TIRP_relations[curr_rel_index]
+    poss_relations = compose_relation(ArB, BrC)  # must behave like transition_table[(ArB, BrC)]
+
+    for poss_rel in poss_relations:
+        path.append(poss_rel)
+        decrement_index -= 1
+        find_all_possible_extensions(
+            all_paths,
+            path,
+            poss_rel,
+            curr_rel_index - decrement_index - 1,
+            decrement_index,
+            TIRP_relations,
+        )
+        decrement_index += 1
+        path.pop()
     return all_paths
 
 

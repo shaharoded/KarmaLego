@@ -861,7 +861,7 @@ class Lego(KarmaLego):
 
                 # get predecessor relation sequences (excluding the new-last relation)
                 all_paths = find_all_possible_extensions(
-                    [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
+                    [], [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
                 )
 
                 for path in all_paths:
