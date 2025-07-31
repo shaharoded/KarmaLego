@@ -4,6 +4,7 @@ from copy import deepcopy
 from collections import defaultdict
 from tqdm import tqdm
 import pandas as pd
+import time
 
 from core.utils import (
     temporal_relations,
@@ -495,7 +496,10 @@ class KarmaLego:
         tree : TreeNode, optional
             Root of internal pattern tree (if return_tree=True).
         """
+        t0 = time.perf_counter()
+
         # Precompute sorted entities and symbol→positions index once.
+        t_pre_start = time.perf_counter()
         precomputed = []
         for entity in entity_list:
             lexi = lexicographic_sorting(entity)
@@ -503,16 +507,22 @@ class KarmaLego:
             for pos, (_, _, sym) in enumerate(lexi):
                 symbol_to_positions[sym].append(pos)
             precomputed.append({"sorted": lexi, "symbol_index": symbol_to_positions})
+        t_pre_end = time.perf_counter()
 
         # Karma phase: requires precomputed passed in
+        t_karma_start = time.perf_counter()
         karma = Karma(self.epsilon, self.max_distance, self.min_ver_supp)
         tree = karma.run_karma(entity_list, precomputed)
+        t_karma_end = time.perf_counter()
 
         # Lego extension
+        t_lego_start = time.perf_counter()
         lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True)
         full_tree = lego.run_lego(tree, entity_list)
+        t_lego_end = time.perf_counter()
 
         # Flatten and filter
+        t_flatten_start = time.perf_counter()
         all_tirps = full_tree.find_tree_nodes()
         filtered = [t for t in all_tirps if t.k >= min_length]
 
@@ -533,6 +543,18 @@ class KarmaLego:
 
         df = pd.DataFrame.from_records(records)
         df = df.sort_values(by=["k", "vertical_support"], ascending=[True, False]).reset_index(drop=True)
+        t_flatten_end = time.perf_counter()
+
+        # Log timings
+        total = time.perf_counter() - t0
+        logger.info(
+            "discover_patterns timings (s): precompute=%.4f karma=%.4f lego=%.4f flatten=%.4f total=%.4f",
+            t_pre_end - t_pre_start,
+            t_karma_end - t_karma_start,
+            t_lego_end - t_lego_start,
+            t_flatten_end - t_flatten_start,
+            total,
+        )
 
         outputs = (df,)
         if return_tirps:
