@@ -860,8 +860,9 @@ class Lego(KarmaLego):
                 decrement_index = curr_num_of_symbols - 1
 
                 # get predecessor relation sequences (excluding the new-last relation)
+                all_paths = []
                 all_paths = find_all_possible_extensions(
-                    [], [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
+                    all_paths, [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
                 )
 
                 for path in all_paths:

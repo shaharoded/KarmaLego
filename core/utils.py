@@ -83,43 +83,38 @@ def check_symbols_lexicographically(entity_symbols, pattern_symbols):
 
 def find_all_possible_extensions(all_paths, path, BrC, curr_rel_index, decrement_index, TIRP_relations):
     """
-    Backward-backtracks to enumerate all valid predecessor relation sequences needed when extending a TIRP.
+    Backtrack to enumerate all valid predecessor relation sequences needed when extending a TIRP.
 
-    Given the new-last relation (BrC) between the previous symbol and the candidate extension symbol,
-    this recursively walks backward over the flattened upper-triangular relation list of the base TIRP,
-    composing relations via the composition table to produce all sequences of preceding relations that
-    keep the extended pattern consistent.
+    Given the new-last relation (BrC) between the previous last symbol and the candidate extension,
+    recursively walk backward over the flattened upper-triangular relation list of the base TIRP,
+    composing relations via the transition table to produce all consistent sequences of preceding relations.
 
     Parameters
     ----------
     all_paths : list[list]
-        Mutable accumulator. Each time a full consistent predecessor sequence is found (i.e., the
-        backward walk reaches before the start), a copy of the current `path` (excluding BrC) is appended.
+        Accumulator. Each valid predecessor sequence (excluding BrC itself) is appended here.
     path : list
-        Working buffer of predecessor relations collected so far. Modified in-place during recursion
-        (appended before descent, popped after).
+        Working buffer of relations collected so far; mutated in-place.
     BrC : hashable
         Relation between the previous last symbol B and the new symbol C being added.
     curr_rel_index : int
-        Current index into `TIRP_relations` from which to step backward.
+        Current index in TIRP_relations to consider (walking backwards).
     decrement_index : int
-        Controls how far to jump the next index backward; reflects the structure of the flattened
-        upper-triangular representation (and is decremented per level).
+        Step size control for moving backward in the flattened upper-triangular structure.
     TIRP_relations : list
-        Flattened list of existing relations of the base TIRP in upper-triangular order.
+        Flattened list of existing relations of the base TIRP (upper-triangular order).
 
     Returns
     -------
     list[list]
-        Same object as `all_paths`, extended in-place with each valid predecessor relation sequence.
-        Each inner list contains relations that precede `BrC` (does not include `BrC` itself).
+        The same `all_paths` object, extended with each valid predecessor relation sequence.
     """
     if curr_rel_index < 0:
         all_paths.append(deepcopy(path))
-        return
+        return all_paths
 
     ArB = TIRP_relations[curr_rel_index]
-    poss_relations = compose_relation(ArB, BrC)  # must behave like transition_table[(ArB, BrC)]
+    poss_relations = compose_relation(ArB, BrC)
 
     for poss_rel in poss_relations:
         path.append(poss_rel)
