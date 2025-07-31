@@ -12,3 +12,6 @@ venv/
 # Editor
 .vscode/
 *.swp
+
+# Mappings
+*symbol_map.json
