@@ -301,11 +301,22 @@ class TIRP:
         AttributeError
             If after extension the length invariants between symbols and relations are violated.
         """
+        expected_after = ((len(self.symbols)+1) * len(self.symbols)) // 2  # new k = old_k+1
+        if len(new_relations) != expected_after - len(self.relations):
+            # this is the delta of relations being added; if inconsistent, log and raise
+            raise AttributeError(
+                f"Extension of TIRP is wrong: trying to add {len(new_relations)} relations "
+                f"but expected {expected_after - len(self.relations)}. "
+                f"base symbols={self.symbols}, base relations={self.relations}, "
+                f"new_symbol={new_symbol}, new_relations={new_relations}"
+            )
         self.symbols.append(new_symbol)
         self.relations.extend(new_relations)
         if not self.check_size():
-            raise AttributeError("Extension of TIRP is wrong!")
-        self._hash_cache = None  # invalidate cached hash
+            raise AttributeError(
+                f"Extension of TIRP is wrong after append! symbols={self.symbols}, relations={self.relations}"
+            )
+        self._hash_cache = None  # reset cached hash
 
     def check_size(self):
         """
@@ -464,6 +475,18 @@ class TIRP:
 
 
 class KarmaLego:
+    """
+    Orchestrates the Karma→Lego pattern mining pipeline.
+
+    Attributes
+    ----------
+    epsilon:
+        Temporal tolerance for endpoint equality/meeting.
+    max_distance:
+        Maximum gap for considering influence between intervals.
+    min_ver_supp:
+        Minimum vertical support threshold for a pattern to be kept.
+    """
     def __init__(self, epsilon, max_distance, min_ver_supp):
         self.epsilon = epsilon
         self.max_distance = max_distance
@@ -622,8 +645,22 @@ class Karma(KarmaLego):
 
     def run_karma(self, entity_list, precomputed):
         """
-        First phase: discover frequent singletons and length-2 TIRPs (Karma),
-        using precomputed sorted entities and symbol indexes.
+        Karma phase: discover frequent singletons and all length-2 TIRPs.
+
+        Uses precomputed sorted entities and symbol position indexes to avoid recomputation.
+
+        Parameters
+        ----------
+        entity_list :
+            List of entities (each a list of (start, end, symbol)).
+        precomputed :
+            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
+            and 'symbol_index' (symbol -> positions within that entity).
+
+        Returns
+        -------
+        TreeNode
+            Root node whose children are singleton TIRPs, with length-2 TIRPs attached as appropriate.
         """
         tree = TreeNode("root")
         frequent_symbols = set()
@@ -726,6 +763,16 @@ class Karma(KarmaLego):
 
 
 class Lego(KarmaLego):
+    """
+    Lego phase driver (pattern extension).
+
+    Parameters
+    ----------
+    tree :
+        Pattern tree produced by Karma.
+    show_detail :
+        Whether to show per-TIRP extension progress bars.
+    """
     def __init__(self, tree, epsilon, max_distance, min_ver_supp, show_detail):
         self.tree = tree
         super().__init__(epsilon, max_distance, min_ver_supp)
@@ -733,8 +780,22 @@ class Lego(KarmaLego):
 
     def run_lego(self, node, entity_list):
         """
-        Iteratively extend TIRPs in the tree (Lego phase), with a single progress bar over
-        nodes being expanded.
+        Extend base patterns recursively to higher-order TIRPs.
+
+        Breadth-first traverses the tree, attempting all valid one-symbol extensions and
+        attaching those meeting vertical support.
+
+        Parameters
+        ----------
+        node :
+            Root TreeNode to start extension from.
+        entity_list :
+            List of entities for support computation.
+
+        Returns
+        -------
+        TreeNode
+            The same tree with extended TIRPs grafted in.
         """
         # Breadth-first expansion queue
         queue = [node]
@@ -764,13 +825,26 @@ class Lego(KarmaLego):
 
     def all_extensions(self, entity_list, tirp):
         """
-        Given a base TIRP, produce all one-symbol extensions (candidate next-level TIRPs).
+        Enumerate candidate one-symbol extensions of a given TIRP.
+
+        Builds new TIRPs by adding one symbol and computing the required predecessor
+        relation sequences; enforces structural invariants and fails loudly if violated.
+
+        Parameters
+        ----------
+        entity_list :
+            All entities to base extension on.
+        tirp :
+            Base TIRP to extend.
+
+        Returns
+        -------
+        list[TIRP]
+            New candidate TIRPs of length k+1 (not yet filtered by support).
         """
         curr_num_of_symbols = len(tirp.symbols)
         all_possible = []
-        for sym_index, ent_index in zip(
-            tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting
-        ):
+        for sym_index, ent_index in zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting):
             lexi_entity = lexicographic_sorting(entity_list[ent_index])
             if curr_num_of_symbols >= len(lexi_entity):
                 continue
@@ -781,16 +855,30 @@ class Lego(KarmaLego):
                 )
                 if rel_last_new is None:
                     continue
+
                 curr_rel_index = len(tirp.relations) - 1
                 decrement_index = curr_num_of_symbols - 1
+
+                # get predecessor relation sequences (excluding the new-last relation)
                 all_paths = find_all_possible_extensions(
                     [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
                 )
+
                 for path in all_paths:
                     new_relations = [rel_last_new, *path]
-                    new_relations.reverse()
+                    # expected number of new relations when extending by one symbol is current pattern length
+                    if len(new_relations) != curr_num_of_symbols:
+                        # Implementation invariant violated: surface loudly for debugging
+                        raise RuntimeError(
+                            f"Malformed extension candidate: base_k={curr_num_of_symbols}, "
+                            f"computed new_relations={new_relations} (len={len(new_relations)})"
+                        )
+
+                    new_relations.reverse()  # match original ordering semantics
                     tirp_copy = deepcopy(tirp)
-                    tirp_copy.extend(new_symbol, new_relations)
+                    tirp_copy.extend(new_symbol, new_relations)  # should not fail if logic is correct
+
+                    # set needed metadata
                     tirp_copy.k = tirp.k + 1
                     tirp_copy.vertical_support = None
                     tirp_copy.parent_entity_indices_supporting = tirp.entity_indices_supporting

@@ -84,60 +84,43 @@ def find_all_possible_extensions(all_paths, BrC, curr_rel_index, decrement_index
     """
     Compute all valid predecessor relation sequences needed when extending a TIRP by a new symbol.
 
-    Given the relation between the previous last symbol and the new symbol (BrC) and the current
-    flattened relation list of the base TIRP (TIRP_relations), this walks backwards through the
-    implied upper-triangular constraints, using the composition table to enumerate all sequences
-    of prior relations that keep the extended pattern consistent.
-
-    This is an iterative replacement of a recursive backtracking algorithm. It accumulates each
-    completed "extension path" (a list of relations preceding the new-last relation) into `all_paths`.
+    Recursive backtracking over the flattened upper-triangular relation list.
+    Given the relation between the previous last symbol (B) and the new symbol (C) (BrC),
+    it walks backwards, composing relations via the composition table to enumerate all
+    consistent sequences of preceding relations.
 
     Parameters
     ----------
     all_paths : list
-        Mutable accumulator. The function appends each valid extension path to this list and returns it.
-        Each element appended is a list of relations (in the order generated) that, together with BrC,
-        satisfy the consistency constraints going backward.
+        Accumulator to which each completed predecessor path is appended (excluding BrC).
     BrC : hashable
-        Relation between the previous last symbol (B) and the new symbol (C) being added.
+        Relation between the previous last symbol (B) and the new symbol (C).
     curr_rel_index : int
-        Index into TIRP_relations pointing to the current relation (working backward from the end).
+        Current index in TIRP_relations (working backwards).
     decrement_index : int
-        Step control for navigating the flattened upper-triangular structure; determines how far to
-        move the next index backward in each level.
+        Controls how far to step backwards in the flattened upper-triangular layout.
     TIRP_relations : list
-        Existing relations of the base TIRP being extended (flattened upper-triangular order).
+        Existing relations of the base TIRP (flattened upper-triangular order).
 
     Returns
     -------
     list
-        The same `all_paths` object, extended with each valid predecessor-relation sequence. Each inner list
-        represents the required relations that precede BrC for a consistent extension (does not include BrC itself).
+        The same all_paths passed in, extended with each valid list of predecessor relations.
     """
-    results = []
-    # Stack entries: (current_rel_index, current_decrement_index, accumulated_path, current_BrC)
-    stack = [(curr_rel_index, decrement_index, [], BrC)]
-
-    while stack:
-        ci, di, pth, brc = stack.pop()
+    def dfs(ci, di, brc, path):
         if ci < 0:
-            # Completed a full backward path; record it
-            results.append(pth.copy())
-            continue
-
+            all_paths.append(path.copy())
+            return
         ArB = TIRP_relations[ci]
         poss_relations = compose_relation(ArB, brc)
         if not poss_relations:
-            # No valid compositions here; dead end
-            continue
-
+            return  # dead end
         for poss_rel in poss_relations:
             next_ci = ci - di - 1
             next_di = di - 1
-            new_path = pth + [poss_rel]
-            stack.append((next_ci, next_di, new_path, poss_rel))
+            dfs(next_ci, next_di, poss_rel, path + [poss_rel])
 
-    all_paths.extend(results)
+    dfs(curr_rel_index, decrement_index, BrC, [])
     return all_paths
 
 
