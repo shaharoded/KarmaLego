@@ -6,7 +6,7 @@ Based on the paper:
 Robert Moskovitch, Yuval Shahar. *Temporal Patterns Discovery from Multivariate Time Series via Temporal Abstraction and Time-Interval Mining.*  
 (See original for theoretical grounding.)
 
-This implementation is inspired by markozeman implementation, available on this (link)[https://github.com/markozeman/KarmaLego], and is designed to be used as an analytic tool in my thesis.
+This implementation is inspired by markozeman implementation, available on this [link](https://github.com/markozeman/KarmaLego), and is designed to be used as an analytic tool in my thesis.
 
 ---
 
