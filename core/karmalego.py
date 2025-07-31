@@ -1,21 +1,35 @@
 import logging
-from tqdm import tqdm
-import numpy as np
 from functools import wraps
+from copy import deepcopy
+from collections import defaultdict
 
-from core.utils import *
+from tqdm import tqdm
 
-# basic logger setup (only once)
-logging.basicConfig(level=logging.INFO)
+from core.utils import (
+    temporal_relations,
+    lexicographic_sorting,
+    check_symbols_lexicographically,
+    find_all_possible_extensions,
+    count_embeddings_in_single_entity,
+    vertical_support_symbol
+)
+
+# logging decorator
 logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    logging.basicConfig(level=logging.INFO)
+
 
 def log_execution(func):
+    from functools import wraps
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         logger.info(f"Starting {func.__name__}")
         result = func(*args, **kwargs)
         logger.info(f"Finished {func.__name__}")
         return result
+
     return wrapper
 
 
@@ -454,125 +468,219 @@ class TIRP:
         return self.vertical_support >= self.min_ver_supp
 
 
-
-
-
-
-class Karma:
-    """
-    Generate candidates by extending previous-level TIRPs.
-    """
+class KarmaLego:
     def __init__(self, epsilon, max_distance, min_ver_supp):
         self.epsilon = epsilon
         self.max_distance = max_distance
         self.min_ver_supp = min_ver_supp
 
-    def run(self, prev_tirps, entity_list):
-        candidates = set()
-        for tirp in prev_tirps:
-            for idx, pid in zip(tirp.indices_of_last_symbol_in_entities,
-                                tirp.entity_indices_supporting):
-                ev = lexicographic_sorting(entity_list[pid])
-                for next_i in range(idx+1, len(ev)):
-                    start1, end1, _ = ev[idx]
-                    start2, end2, sym2 = ev[next_i]
-                    rel = temporal_relations((start1,end1),(start2,end2),
-                                              self.epsilon, self.max_distance)
+    @log_execution
+    def calculate_frequent_patterns(self, entity_list, min_length=2):
+        """
+        Discover frequent TIRPs from the entity_list using Karma→Lego logic.
+
+        Parameters
+        ----------
+        entity_list : list
+            List of entities. Each entity is a list of (start, end, symbol) tuples.
+        min_length : int
+            Minimum pattern length to keep (1=include singletons).
+
+        Returns
+        -------
+        root_tree : TreeNode
+            Root of the pattern tree with frequent TIRPs attached.
+        flat_patterns : list[TIRP]
+            Flattened list of all frequent TIRPs discovered (meeting min_ver_supp and min_length).
+        """
+        # Karma phase: frequent singletons and length-2 seeds
+        karma = Karma(self.epsilon, self.max_distance, self.min_ver_supp)
+        tree = karma.run(entity_list)
+
+        # Lego phase: recursive extension
+        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp)
+        full_tree = lego.run_lego(tree, entity_list)
+
+        # flatten results
+        all_tirps = full_tree.find_tree_nodes()
+        filtered = [t for t in all_tirps if t.k >= min_length]
+        return full_tree, filtered
+    
+
+    @log_execution
+    def apply_patterns_to_entities(self, entity_list, patterns, patient_ids, tpp=False):
+        """
+        Given a list of frequent TIRPs, produce per-patient pattern counts or normalized distributions.
+
+        Parameters
+        ----------
+        entity_list : list
+            List of entities (one per patient), each a list of (start,end,symbol).
+        patterns : list of TIRP
+            Frequent patterns to apply.
+        patient_ids : list
+            Parallel list of identifiers for each entity in entity_list (e.g., PatientID).
+        tpp : bool
+            If True, return normalized distribution per patient (pattern count / total counts for that patient).
+            If False, raw counts.
+
+        Returns
+        -------
+        result : dict
+            Mapping patient_id -> dict(pattern_id -> count or normalized value)
+        """
+        # pattern_id can be repr(tirp) for human-readable key
+        patient_pattern_counts = {pid: defaultdict(int) for pid in patient_ids}
+
+        # precompute embeddings per pattern per patient to avoid recomputing for support
+        for tirp in tqdm(patterns, desc="Applying patterns to entities"):
+            pattern_key = repr(tirp)
+            for idx, entity in enumerate(entity_list):
+                count = count_embeddings_in_single_entity(tirp, entity)
+                if count > 0:
+                    patient_pattern_counts[patient_ids[idx]][pattern_key] = count
+
+        # normalize if tpp
+        if tpp:
+            for pid in patient_pattern_counts:
+                counts = patient_pattern_counts[pid]
+                total = sum(counts.values())
+                if total > 0:
+                    for k in list(counts.keys()):
+                        counts[k] = counts[k] / total  # normalized
+
+        return patient_pattern_counts
+    
+
+class Karma(KarmaLego):
+    def __init__(self, epsilon, max_distance, min_ver_supp):
+        super().__init__(epsilon, max_distance, min_ver_supp)
+
+    def run(self, entity_list):
+        """
+        First phase: discover frequent singletons and length-2 TIRPs (Karma).
+        Returns a TreeNode with k=1 symbols as children and frequent k=2 TIRPs attached.
+        """
+        # extract all symbols
+        all_symbols = set()
+        for entity in entity_list:
+            for _, _, sym in entity:
+                all_symbols.add(sym)
+        all_symbols = list(all_symbols)
+
+        # frequent singletons
+        frequent_symbols = []
+        tree = TreeNode("root")
+        for symbol in all_symbols:
+            sup = vertical_support_symbol(entity_list, symbol)
+            if sup >= self.min_ver_supp:
+                node = TreeNode(symbol)
+                tree.add_child(node)
+                frequent_symbols.append(symbol)
+
+        # generate all pair TIRPs (k=2)
+        tirp_dict = {}  # dedupe by structural identity
+        for entity_index, entity in enumerate(entity_list):
+            ordered_ti = lexicographic_sorting(entity)
+            for i in range(len(ordered_ti)):
+                for j in range(i + 1, len(ordered_ti)):
+                    start_1, end_1, symbol_1 = ordered_ti[i]
+                    start_2, end_2, symbol_2 = ordered_ti[j]
+                    if symbol_1 not in frequent_symbols or symbol_2 not in frequent_symbols:
+                        continue
+                    rel = temporal_relations((start_1, end_1), (start_2, end_2), self.epsilon, self.max_distance)
                     if rel is None:
                         continue
-                    # determine new relation vector for extension
-                    # placeholder for generating full relations list
-                    new_relations = [rel]
-                    new = tirp.extend(sym2, new_relations, tirp.entity_indices_supporting)
-                    candidates.add(new)
-        return list(candidates)
+                    tirp = TIRP(
+                        epsilon=self.epsilon,
+                        max_distance=self.max_distance,
+                        min_ver_supp=self.min_ver_supp,
+                        symbols=[symbol_1, symbol_2],
+                        relations=[rel],
+                        k=2,
+                    )
+                    # accumulate support info manually (will recompute vertical_support later)
+                    key = hash(tirp)
+                    if key not in tirp_dict:
+                        # initialize support tracking
+                        tirp.entity_indices_supporting = [entity_index]
+                        tirp.indices_of_last_symbol_in_entities = [j]
+                        tirp_dict[key] = tirp
+                    else:
+                        existing = tirp_dict[key]
+                        existing.entity_indices_supporting.append(entity_index)
+                        existing.indices_of_last_symbol_in_entities.append(j)
 
-class Lego:
-    """
-    Validate candidates by computing vertical support and filtering closed patterns.
-    """
-    def __init__(self, epsilon, max_distance, min_ver_supp):
-        self.epsilon = epsilon
-        self.max_distance = max_distance
-        self.min_ver_supp = min_ver_supp
-
-    def run(self, candidates, entity_list):
-        Lk = []
-        for cand in tqdm(candidates, desc="Lego stage" if len(candidates)>1 else "Lego"):  # tqdm if many
-            if cand.is_above_vertical_support(entity_list):
-                if cand.vertical_support >= self.min_ver_supp:
-                    Lk.append(cand)
-        return Lk
-
-class FrequentPatternMiner:
-    """
-    End-to-end KarmaLego miner.
-    """
-    REQUIRED_COLUMNS = ['PatientID','ConceptName','StartDate','EndDate','Value']
-
-    def __init__(self, min_support, epsilon, max_distance,
-                 max_k=3, use_dask=False):
-        self.min_support = min_support
-        self.epsilon = epsilon
-        self.max_distance = max_distance
-        self.max_k = max_k
-        self.use_dask = use_dask
-        self.concept_map = {}
-        self.entity_list = []
-
-    @log_execution
-    def load_data(self, df):
-        missing = set(self.REQUIRED_COLUMNS) - set(df.columns)
-        if missing:
-            raise SchemaValidationError(f"Missing columns: {missing}")
-        if self.use_dask:
-            df = dd.from_pandas(df, npartitions=4)
-        df['StartDate'] = pd.to_datetime(df['StartDate'])
-        df['EndDate'] = pd.to_datetime(df['EndDate'])
-        unique = df['ConceptName'].unique().compute() if self.use_dask else df['ConceptName'].unique()
-        self.concept_map = {c:i for i,c in enumerate(sorted(unique))}
-        df['Code'] = df['ConceptName'].map(self.concept_map)
-        # build entity list
-        grp = df.groupby('PatientID')
-        self.entity_list = grp.apply(lambda pdf: list(zip(pdf['StartDate'], pdf['EndDate'], pdf['Code']))).tolist()
-        return df
-
-    @log_execution
-    def calculate_frequent_patterns(self):
-        # k=1: single symbols
-        tree = TreeNode('root')
-        base = []
-        for pid, events in enumerate(self.entity_list):
-            unique_codes = set([c for _,_,c in events])
-            for c in unique_codes:
-                tirp = TIRP(self.epsilon, self.max_distance, self.min_support,
-                            symbols=[c], relations=[], k=1,
-                            entity_indices_supporting=[pid],
-                            indices_of_last_symbol_in_entities=[
-                                sorted(events, key=lambda x: x[0])[0][2]  # first idx placeholder
-                            ])
-                base.append(tirp)
-        # prune by support
-        base_pruned = [t for t in base if t.is_above_vertical_support(self.entity_list)]
-        for t in base_pruned:
-            tree.add_child(TreeNode(t))
-
-        # higher-order
-        current = [node.data for node in tree.children]
-        for k in range(2, self.max_k+1):
-            karma = Karma(self.epsilon, self.max_distance, self.min_support)
-            cand = karma.run(current, self.entity_list)
-            lego = Lego(self.epsilon, self.max_distance, self.min_support)
-            nxt = lego.run(cand, self.entity_list)
-            for t in nxt:
-                # attach to appropriate parent node
-                # find parent TreeNode
-                pass  # implementation detail
-            current = nxt
+        # finalize length-2 TIRPs: dedupe embedded entity indices and attach to tree
+        for tirp in tirp_dict.values():
+            # dedupe pairs
+            if tirp.entity_indices_supporting:
+                unique = set(zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting))
+                if unique:
+                    sym_idxs, ent_idxs = zip(*unique)
+                    tirp.indices_of_last_symbol_in_entities = list(sym_idxs)
+                    tirp.entity_indices_supporting = list(ent_idxs)
+            # compute vertical support
+            tirp.vertical_support = len(set(tirp.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
+            if tirp.vertical_support >= self.min_ver_supp:
+                # attach under corresponding singleton parent (first symbol)
+                for child in tree.children:
+                    if child.data == tirp.symbols[0]:
+                        child.add_child(TreeNode(tirp))
+                        break
         return tree
 
-# utils.py (utility module)
-# Place:
-# - temporal_relations(start_end1, start_end2, epsilon, max_distance)
-# - lexicographic_sorting(events)
-# Additional TIRP helper methods (e.g., is_above_vertical_support) remain in TIRP class.
+
+class Lego(KarmaLego):
+    def __init__(self, tree, epsilon, max_distance, min_ver_supp):
+        self.tree = tree
+        super().__init__(epsilon, max_distance, min_ver_supp)
+
+    def run_lego(self, node, entity_list):
+        """
+        Recursively extend TIRPs in the tree (Lego phase).
+        """
+        if isinstance(node.data, TIRP):
+            extensions = list(set(self.all_extensions(entity_list, node.data)))
+            # filter by support
+            ok = []
+            for ext in tqdm(extensions, desc=f"Extending TIRP k={ext.k}"):
+                if ext.is_above_vertical_support(entity_list):
+                    ok.append(ext)
+            for ext in ok:
+                node.add_child(TreeNode(ext))
+        for child in node.children:
+            self.run_lego(child, entity_list)
+        return node
+
+    def all_extensions(self, entity_list, tirp):
+        """
+        Given a base TIRP, produce all one-symbol extensions (candidate next-level TIRPs).
+        """
+        curr_num_of_symbols = len(tirp.symbols)
+        all_possible = []
+        for sym_index, ent_index in zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting):
+            lexi_entity = lexicographic_sorting(entity_list[ent_index])
+            if curr_num_of_symbols >= len(lexi_entity):
+                continue
+            for after_sym in lexi_entity[sym_index + 1 :]:
+                *new_ti, new_symbol = after_sym
+                rel_last_new = temporal_relations(lexi_entity[sym_index][:2], new_ti, self.epsilon, self.max_distance)
+                if rel_last_new is None:
+                    continue
+                curr_rel_index = len(tirp.relations) - 1
+                decrement_index = curr_num_of_symbols - 1
+                all_paths = find_all_possible_extensions([], [], rel_last_new, curr_rel_index, decrement_index, tirp.relations)
+                for path in all_paths:
+                    new_relations = [rel_last_new, *path]
+                    new_relations.reverse()
+                    tirp_copy = deepcopy(tirp)
+                    tirp_copy.extend(new_symbol, new_relations)
+                    tirp_copy.k = tirp.k + 1
+                    tirp_copy.vertical_support = None
+                    tirp_copy.parent_entity_indices_supporting = tirp.entity_indices_supporting
+                    tirp_copy.entity_indices_supporting = []
+                    tirp_copy.indices_of_last_symbol_in_entities = []
+                    all_possible.append(tirp_copy)
+        return all_possible
+

@@ -1,14 +1,19 @@
 """
-Transition table is 2D matrix coded as dictionary with tuples as keys.
+Allen-like interval relation composition for KarmaLego.
 
-r - one of 7 Allen's temporal relations ('<', 'm', 'o', 'c', 'f', '=', 's')
-
-Key: (A r B, B r C) ... Value: List of possible relations A r C
-
-(A r B) ∧ (B r C) ==> A {r1, r2, ...} C
+Supported relations (7):
+    '<' : before
+    'm' : meets
+    'o' : overlaps
+    'f' : finished-by (A is finished by B: start(A) < start(B) and end(A)==end(B))
+    'c' : contains (A contains B)
+    's' : start-by (A is started by B: start(A)==start(B) and end(A) > end(B))
+    '=' : equal
 """
 
-transition_table = {
+# Composition (transition) table: given (A r B, B r C), what are possible A r C.
+# Existing hand-crafted table retained; accesses should go through compose_relation.
+_transition_table = {
     ('<', '<'): ['<'],
     ('<', 'm'): ['<'],
     ('<', 'o'): ['<'],
@@ -63,5 +68,13 @@ transition_table = {
     ('s', 'c'): ['<', 'm', 'o', 'c', 'f'],
     ('s', 'f'): ['<', 'm', 'o'],
     ('s', '='): ['s'],
-    ('s', 's'): ['s']
+    ('s', 's'): ['s'],
 }
+
+
+def compose_relation(ar_b, b_r_c):
+    """
+    Safe composition: given (A r B) and (B r C), return possible A r C relations.
+    Returns empty list if the pair is not defined.
+    """
+    return _transition_table.get((ar_b, b_r_c), [])
