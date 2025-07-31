@@ -7,6 +7,31 @@ from typing import Tuple, Dict, Union
 REQUIRED_COLUMNS = {"PatientID", "ConceptName", "StartDateTime", "EndDateTime", "Value"}
 
 
+def _parse_datetime_series(series, dayfirst: bool = True) -> pd.Series:
+    """
+    Parse a Series of datetime-like strings with a preference for day-first ordering,
+    falling back gracefully if needed.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Input string series representing timestamps.
+    dayfirst : bool
+        Whether to interpret ambiguous dates as day-first (e.g., '13/01/2023').
+
+    Returns
+    -------
+    pd.Series
+        Parsed datetime series. If fallback parsing fails for some entries, they become NaT.
+    """
+    try:
+        # Primary attempt with dayfirst
+        return pd.to_datetime(series, dayfirst=dayfirst, errors="raise")
+    except Exception:
+        # Fallback: try without dayfirst, coercing invalids to NaT
+        return pd.to_datetime(series, errors="coerce")
+    
+
 def validate_input(df: Union[pd.DataFrame, dd.DataFrame]) -> None:
     """
     Ensure required columns exist and have no nulls in key fields.
@@ -23,7 +48,7 @@ def validate_input(df: Union[pd.DataFrame, dd.DataFrame]) -> None:
             raise ValueError("Null PatientID found")
         if pdf["ConceptName"].isnull().any():
             raise ValueError("Null ConceptName found")
-        if pdf["StartTime"].isnull().any() or pdf["EndTime"].isnull().any():
+        if pdf["StartDateTime"].isnull().any() or pdf["EndDateTime"].isnull().any():
             raise ValueError("Null time bounds found")
         return pdf
 
@@ -87,14 +112,14 @@ def preprocess_dataframe(
     symbol_map: Dict[str, int],
     concept_col: str = "ConceptName",
     value_col: str = "Value",
-    start_col: str = "StartTime",
-    end_col: str = "EndTime",
+    start_col: str = "StartDateTime",
+    end_col: str = "EndDateTime",
     patient_col: str = "PatientID",
     parse_dates: bool = True,
 ) -> Union[pd.DataFrame, dd.DataFrame]:
     """
     Normalize dtypes, apply symbol mapping to create integer symbol column, parse times.
-    Returns DataFrame with columns: PatientID, symbol (int), StartTime (datetime), EndTime (datetime)
+    Returns DataFrame with columns: PatientID, symbol (int), StartDateTime (datetime), EndDateTime (datetime)
     """
     # Combine concept and value into raw symbol string
     def _make_symbol(pdf):
@@ -102,8 +127,15 @@ def preprocess_dataframe(
         pdf["raw_symbol"] = pdf[concept_col].astype(str) + ":" + pdf[value_col].astype(str)
         pdf["symbol"] = pdf["raw_symbol"].map(symbol_map)
         if parse_dates:
-            pdf[start_col] = pd.to_datetime(pdf[start_col])
-            pdf[end_col] = pd.to_datetime(pdf[end_col])
+            pdf[start_col] = _parse_datetime_series(pdf[start_col], dayfirst=True)
+            pdf[end_col] = _parse_datetime_series(pdf[end_col], dayfirst=True)
+
+            # Optional strictness: fail early if any parsing produced NaT
+            if pdf[start_col].isna().any() or pdf[end_col].isna().any():
+                bad = pdf[pdf[start_col].isna() | pdf[end_col].isna()]
+                raise ValueError(
+                    f"Date parsing produced NaT for some rows. Examples:\n{bad.head(5)}"
+                )
         return pdf
 
     if isinstance(df, dd.DataFrame):
@@ -127,8 +159,8 @@ def preprocess_dataframe(
 def to_entity_list(
     df: Union[pd.DataFrame, dd.DataFrame],
     patient_col: str = "PatientID",
-    start_col: str = "StartTime",
-    end_col: str = "EndTime",
+    start_col: str = "StartDateTime",
+    end_col: str = "EndDateTime",
     symbol_col: str = "symbol",
 ) -> Tuple[list, list]:
     """

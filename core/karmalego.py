@@ -31,10 +31,6 @@ def log_execution(func):
     return wrapper
 
 
-class SchemaValidationError(Exception):
-    pass
-
-
 class TreeNode:
     """
     General-purpose tree node for enumerated TIRPs (or any pattern-like objects).
