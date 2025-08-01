@@ -16,7 +16,9 @@ KarmaLego mines **frequent time-interval relation patterns (TIRPs)** by combinin
 
 KarmaLego first scans each patient's timeline to identify pairwise **Allen relations** (e.g., before, overlaps, meets) between intervals:
 
-![Temporal Relations Matrix](images/temporal_relations.png)
+<p align="center">
+  <img src="images/temporal_relations.png" alt="Temporal Relations Matrix" width="60%">
+</p>
 
 Each cell in the matrix shows the temporal relation between intervals (e.g., `A¹ o B¹` = A¹ overlaps B¹). These relations become the building blocks of complex temporal patterns.
 
