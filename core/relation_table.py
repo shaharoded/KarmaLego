@@ -11,6 +11,8 @@ Supported relations (7):
     '=' : equal
 """
 
+from functools import lru_cache
+
 # Composition (transition) table: given (A r B, B r C), what are possible A r C.
 # Existing hand-crafted table retained; accesses should go through compose_relation.
 _transition_table = {
@@ -72,12 +74,13 @@ _transition_table = {
 }
 
 
-def compose_relation(ar_b, b_r_c):
+@lru_cache(maxsize=512)
+def compose_relation(a_r_b, b_r_c):
     """
     Safe composition: given (A r B) and (B r C), return possible A r C relations.
     Returns empty list if the pair is not defined.
     """
-    key = (ar_b, b_r_c)
+    key = (a_r_b, b_r_c)
     if key not in _transition_table:
         raise KeyError("Missing transition table entry for %s", key)
     return _transition_table[key]

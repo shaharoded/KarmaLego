@@ -22,6 +22,31 @@ The design goals are: **clarity, performance, testability, and reproducibility**
 
 ---
 
+## KarmaLego Performance Optimizations
+This implementation incorporates several core performance techniques from the KarmaLego framework:
+
+1. **Apriori pruning:**
+The algorithm only extends a pattern (e.g., from length k=2 to k=3) if the shorter base pattern is frequent. This avoids exploring any pattern whose sub-patterns fail the minimum support threshold.
+
+2. **Temporal relation transitivity:**
+During pattern extension (Lego phase), the code uses Allen relation composition to infer allowable temporal relations without explicitly scanning all combinations. This leverages a transition table (compose_relation) to reduce redundant comparisons.
+
+3. **Subset of Active Candidates (SAC):**
+When checking support for a candidate pattern, the algorithm restricts its scan to only those patients that supported its parent pattern. This drastically reduces horizontal support checks at deeper levels of the pattern tree.
+
+4. **Memoization of relation composition:**
+The core `compose_relation()` function is memoized using `@lru_cache`, avoiding redundant transitivity calculations across TIRPs. Since the input space is small (7x7 Allen relations), caching provides a measurable speedup in the Lego phase.
+
+These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
+
+NOTES:
+- The current Lego phase runs in a single thread. Each candidate extension is evaluated sequentially.
+- Future versions can add parallelization (e.g., via multiprocessing) since each extension's support check is independent.
+- Batching or vectorized support computation could speed up Lego further, especially for long TIRPs.
+- Dask can help scale the data ingestion and preprocessing phase, but the core KarmaLego algorithm operates on in-memory Python lists (entity_list) and is not accelerated by Dask.
+
+---
+
 ## Repository Structure
 
 ```
@@ -148,7 +173,7 @@ patient_vectors = kl.apply_patterns_to_entities(entity_list, df_patterns, patien
 
 ---
 
-## Testing
+## Unit-Testing
 
 Run the full test suite:
 
@@ -199,22 +224,10 @@ wide = df_vec.pivot(index="PatientID", columns="Pattern", values="Value").fillna
 
 ---
 
-## Example Pattern Discovery Pipeline (pseudo)
-
-1. Read input CSV.  
-2. `validate_input(df)`  
-3. `(symbol_map, inverse) = build_or_load_mappings(df, mapping_dir="data")`  
-4. `preprocessed = preprocess_dataframe(df, symbol_map)`  
-5. `(entity_list, patient_ids) = to_entity_list(preprocessed)`  
-6. `patterns_df = kl.discover_patterns(entity_list)`  
-7. `patterns_df = decode_pattern_symbols(patterns_df, inverse)`  
-8. Save patterns and apply to get per-patient vectors.
-
----
-
 ## Development Notes
 
 - Core logic lives in `core/karmalego.py`. Utilities (relation inference, transition tables) in `core/utils.py` and `core/relation_table.py`.  
+- Input-Output logic lives in `core/io.py` and controls the formats, data structure, source and destination. Currently adjusted to work on local CPU with csv files. 
 - The pattern tree is built lazily/iteratively; flat exports are used downstream for speed.  
 - Equality and hashing ensure duplicate candidate patterns merge correctly.  
 - Tests provide deterministic synthetic scenarios for regression.
@@ -223,7 +236,5 @@ wide = df_vec.pivot(index="PatientID", columns="Pattern", values="Value").fillna
 
 ## Next Steps / Extensions
 
-- Add better prunning using the parent link in each node  
-- Can this be calculated lazily? Can data be loaded in chunks or can process be parallel? 
-- Add support for filtering patterns by length, closure (closed/superpatterns), or domain importance.  
-- Persist learned patterns as a reusable library for scoring new patients. 
+- Add parallelization support in the Lego phase (careful with the memoization).
+- Explore lazy evaluation or chunked loading for large datasets.
