@@ -471,7 +471,6 @@ class TIRP:
 
         # Final vertical support is with respect to the full original entity list.
         self.vertical_support = len(set(self.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
-
         return self.vertical_support >= self.min_ver_supp
 
 

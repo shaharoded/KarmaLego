@@ -38,7 +38,7 @@ def test_singleton_A_support_full(complex_entities):
 
 def test_pair_A_before_B_and_overlap(complex_entities):
     entities = complex_entities
-    tirp_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.5, symbols=["A", "B"], relations=["b"], k=2)
+    tirp_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.5, symbols=["A", "B"], relations=['<'], k=2)
     assert tirp_Ab.is_above_vertical_support(entities) is True
     print("\n=== Pair TIRP A before B ===")
     print("Summary:", tirp_Ab)
@@ -66,7 +66,7 @@ def test_multiple_embeddings_deduplication():
     e2 = [(0, 2, "B")]
     entities = [e0, e1, e2]
 
-    tirp_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.1, symbols=["A", "B"], relations=["b"], k=2)
+    tirp_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.1, symbols=["A", "B"], relations=['<'], k=2)
     assert tirp_Ab.is_above_vertical_support(entities) is True
     print("\n=== Multiple embeddings deduplication (A before B) ===")
     print("Summary:", tirp_Ab)
@@ -77,7 +77,7 @@ def test_multiple_embeddings_deduplication():
 
 def test_indices_of_last_symbol_alignment(complex_entities):
     entities = complex_entities
-    tirp_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.1, symbols=["A", "B"], relations=["b"], k=2)
+    tirp_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.1, symbols=["A", "B"], relations=['<'], k=2)
     assert tirp_Ab.is_above_vertical_support(entities) is True
     print("\n=== Last-symbol alignment for A before B ===")
     print("Summary:", tirp_Ab)
@@ -99,7 +99,7 @@ def test_parent_filtering_restricts_search(complex_entities):
     print("Summary:", parent_A)
     parent_A.print()
 
-    child_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.0, symbols=["A", "B"], relations=["b"], k=2)
+    child_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.0, symbols=["A", "B"], relations=['<'], k=2)
     child_Ab.parent_entity_indices_supporting = [2]
     assert child_Ab.is_above_vertical_support(entities) is True
     print("\n=== Child A before B with restricted parent support ===")
@@ -118,7 +118,7 @@ def test_extension_flow_with_parent(complex_entities):
     tirp_A.print()
 
     child = deepcopy(tirp_A)
-    child.extend("B", ["b"])
+    child.extend("B", ['<'])
     child.k = 2
     child.parent_entity_indices_supporting = tirp_A.entity_indices_supporting
     assert child.is_above_vertical_support(entities) is True
@@ -132,7 +132,7 @@ def test_extension_flow_with_parent(complex_entities):
 def test_equality_and_hash_behavior():
     t1 = TIRP(epsilon=0, max_distance=10, min_ver_supp=0.1, symbols=["X"], relations=[], k=1)
     t2 = TIRP(epsilon=0, max_distance=10, min_ver_supp=0.1, symbols=["X"], relations=[], k=1)
-    t3 = TIRP(epsilon=0, max_distance=10, min_ver_supp=0.1, symbols=["X", "Y"], relations=["b"], k=2)
+    t3 = TIRP(epsilon=0, max_distance=10, min_ver_supp=0.1, symbols=["X", "Y"], relations=['<'], k=2)
 
     print("\n=== Equality/hash sanity ===")
     print("t1:", t1); t1.print()
@@ -159,10 +159,10 @@ def test_length3_pattern_support():
         [(0, 1, "A"), (2, 3, "C")],               # missing B
     ]
 
-    # Correct triple: all relations are 'before' => ["b","b","b"] corresponds to
+    # Correct triple: all relations are 'before' => ['<','<','<'] corresponds to
     # (A,B), (A,C), (B,C)
     tirp_ABC = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.5,
-                    symbols=["A", "B", "C"], relations=["b", "b", "b"], k=3)
+                    symbols=["A", "B", "C"], relations=['<', '<', '<'], k=3)
     assert tirp_ABC.is_above_vertical_support(entities) is True
     print("\n=== Length-3 TIRP A before B before C ===")
     print("Summary:", tirp_ABC)
@@ -173,9 +173,44 @@ def test_length3_pattern_support():
 
     # Negative: last relation is wrong (B overlaps C instead of before), should fail entirely
     tirp_ABC_bad = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.1,
-                        symbols=["A", "B", "C"], relations=["b", "b", "o"], k=3)
+                        symbols=["A", "B", "C"], relations=['<', '<', "o"], k=3)
     assert not tirp_ABC_bad.is_above_vertical_support(entities)
     print("\n=== Length-3 TIRP with wrong relation (should be unsupported) ===")
     print("Summary:", tirp_ABC_bad)
     tirp_ABC_bad.print()
     assert tirp_ABC_bad.vertical_support == 0.0
+
+
+def test_tirp_print_output_various_lengths():
+    """
+    Creates synthetic entities and prints several TIRPs (length 1-3) using the .print() method
+    to verify human-readable output format.
+    """
+    # Create synthetic dataset of 4 entities
+    entities = [
+        [(0, 1, "A"), (2, 3, "B"), (4, 5, "C")],        # A before B before C
+        [(0, 2, "A"), (3, 4, "B"), (5, 6, "C")],        # A before B before C
+        [(0, 1, "A"), (1, 3, "B")],                     # A overlaps B
+        [(0, 1, "C")],                                  # C only
+    ]
+
+    print("\n--- Singleton TIRP: A ---")
+    tirp_A = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.0, symbols=["A"], relations=[], k=1)
+    tirp_A.is_above_vertical_support(entities)
+    tirp_A.print()
+
+    print("\n--- Pair TIRP: A before B ---")
+    tirp_Ab = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.0, symbols=["A", "B"], relations=['<'], k=2)
+    tirp_Ab.is_above_vertical_support(entities)
+    tirp_Ab.print()
+
+    print("\n--- Pair TIRP: A overlaps B ---")
+    tirp_Ao = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.0, symbols=["A", "B"], relations=["o"], k=2)
+    tirp_Ao.is_above_vertical_support(entities)
+    tirp_Ao.print()
+
+    print("\n--- Triple TIRP: A before B before C ---")
+    tirp_ABC = TIRP(epsilon=0, max_distance=100, min_ver_supp=0.0,
+                    symbols=["A", "B", "C"], relations=['<', '<', '<'], k=3)
+    tirp_ABC.is_above_vertical_support(entities)
+    tirp_ABC.print()
