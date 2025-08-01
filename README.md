@@ -39,11 +39,15 @@ The core `compose_relation()` function is memoized using `@lru_cache`, avoiding 
 
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
 
-NOTES:
-- The current Lego phase runs in a single thread. Each candidate extension is evaluated sequentially.
-- Future versions can add parallelization (e.g., via multiprocessing) since each extension's support check is independent.
-- Batching or vectorized support computation could speed up Lego further, especially for long TIRPs.
-- Dask can help scale the data ingestion and preprocessing phase, but the core KarmaLego algorithm operates on in-memory Python lists (entity_list) and is not accelerated by Dask.
+**Performance Notes:**
+- The core KarmaLego algorithm operates on in-memory Python lists (`entity_list`) and is not accelerated by Dask.
+- The current Lego phase runs sequentially. Attempts to parallelize it (e.g., with Dask or multiprocessing) introduced overhead that slowed performance.
+- Dask can still be useful during ingestion and preprocessing (e.g., using `dd.read_csv()` for large CSVs).
+- Fine-grained parallelism is not recommended due to fast per-node checks and high task management overhead. If the support task increases significantly, perhaps a patient-level parallelism of a TIRP will become useful.
+- Better scaling can be achieved by:
+  - Splitting the dataset into concept clusters or patient cohorts and running in parallel across jobs.
+  - Using `min_ver_supp` and `max_k` to control pattern explosion.
+  - Persisting symbol maps to ensure consistent encoding across runs.
 
 ---
 
@@ -231,10 +235,3 @@ wide = df_vec.pivot(index="PatientID", columns="Pattern", values="Value").fillna
 - The pattern tree is built lazily/iteratively; flat exports are used downstream for speed.  
 - Equality and hashing ensure duplicate candidate patterns merge correctly.  
 - Tests provide deterministic synthetic scenarios for regression.
-
----
-
-## Next Steps / Extensions
-
-- Add parallelization support in the Lego phase (careful with the memoization).
-- Explore lazy evaluation or chunked loading for large datasets.
