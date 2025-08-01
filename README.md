@@ -28,7 +28,9 @@ Each cell in the matrix shows the temporal relation between intervals (e.g., `AÂ
 
 Patterns are built incrementally by traversing a **tree of symbol and relation extensions**, starting from frequent 1-intervals (K=1) and growing to longer TIRPs (K=2,3,...). Only frequent patterns are expanded (Apriori pruning), and relation consistency is ensured using transitivity rules.
 
-![KarmaLego Pattern Extension Tree](images/karmalego_tree.png)
+<p align="center">
+  <img src="images/karmalego_tree.png" alt="KarmaLego Pattern Extension Tree" width="80%" height="80%">
+</p>
 
 This structure enables efficient discovery of high-order, temporally consistent patterns without exhaustively searching all combinations.
 
