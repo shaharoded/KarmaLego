@@ -3,14 +3,37 @@
 **Implementation of the KarmaLego time-interval pattern mining pipeline with end-to-end data ingestion, pattern discovery, and patient-level application.**
 
 Based on the paper:  
-Robert Moskovitch, Yuval Shahar. *Temporal Patterns Discovery from Multivariate Time Series via Temporal Abstraction and Time-Interval Mining.*  
-(See original for theoretical grounding.)
+*Moskovitch, Robert, and Yuval Shahar. "Temporal Patterns Discovery from Multivariate Time Series via Temporal Abstraction and Time-Interval Mining."*  
+(See [original](https://pmc.ncbi.nlm.nih.gov/articles/PMC2815492/) for theoretical grounding.)
 
 This implementation is inspired by markozeman implementation, available on this [link](https://github.com/markozeman/KarmaLego), and is designed to be used as an analytic tool in my thesis.
 
+## How KarmaLego Works
+
+KarmaLego mines **frequent time-interval relation patterns (TIRPs)** by combining two key stages:
+
+### 1. Temporal Relation Encoding
+
+KarmaLego first scans each patient's timeline to identify pairwise **Allen relations** (e.g., before, overlaps, meets) between intervals:
+
+![Temporal Relations Matrix](images/temporal_relations.png)
+
+Each cell in the matrix shows the temporal relation between intervals (e.g., `A¹ o B¹` = A¹ overlaps B¹). These relations become the building blocks of complex temporal patterns.
+
 ---
 
-## Overview
+### 2. Tree-Based Pattern Extension (Lego Phase)
+
+Patterns are built incrementally by traversing a **tree of symbol and relation extensions**, starting from frequent 1-intervals (K=1) and growing to longer TIRPs (K=2,3,...). Only frequent patterns are expanded (Apriori pruning), and relation consistency is ensured using transitivity rules.
+
+![KarmaLego Pattern Extension Tree](images/karmalego_tree.png)
+
+This structure enables efficient discovery of high-order, temporally consistent patterns without exhaustively searching all combinations.
+
+
+---
+
+## Repository Overview
 
 This repository provides:
 - A **clean, efficient implementation** of KarmaLego (Karma + Lego) for discovering frequent Time Interval Relation Patterns (TIRPs).

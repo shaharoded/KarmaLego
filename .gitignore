@@ -16,6 +16,9 @@ venv/
 # Mappings
 *symbol_map.json
 
+# Plain images
+images/
+
 # Output files
 discovered_patterns.csv
 patient_pattern_vectors.csv
