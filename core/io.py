@@ -192,17 +192,3 @@ def to_entity_list(
         entity_list.append(entity)
         patient_ids.append(pid)
     return entity_list, patient_ids
-
-
-def decode_pattern_symbols(
-    df_patterns, inverse_symbol_map: Dict[int, str]
-) -> pd.DataFrame:
-    """
-    Given the patterns DataFrame (with 'symbols' as tuple of ints), expand to human-readable.
-    """
-    def decode_tuple(t):
-        return tuple(inverse_symbol_map.get(i, f"UNK:{i}") for i in t)
-
-    df = df_patterns.copy()
-    df["symbols_readable"] = df["symbols"].apply(decode_tuple)
-    return df

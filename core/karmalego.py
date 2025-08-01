@@ -5,14 +5,15 @@ from collections import defaultdict
 from tqdm import tqdm
 import pandas as pd
 import time
+import json
 
 from core.utils import (
     temporal_relations,
     lexicographic_sorting,
     check_symbols_lexicographically,
     find_all_possible_extensions,
-    count_embeddings_in_single_entity,
-    vertical_support_symbol
+    decode_pattern,
+    count_embeddings_in_single_entity
 )
 
 # logging decorator
@@ -494,7 +495,7 @@ class KarmaLego:
 
     @log_execution
     def discover_patterns(
-        self, entity_list, min_length=1, return_tree=False, return_tirps=False
+        self, entity_list, min_length=1, return_tree=False, return_tirps=False, inverse_mapping_path="data/inverse_symbol_map.json"
     ):
         """
         Discover all frequent TIRPs from entity_list and return a flat DataFrame summary (default).
@@ -509,6 +510,8 @@ class KarmaLego:
             If True, also return the internal pattern tree used for extension.
         return_tirps : bool
             If True, also return the list of TIRP objects in addition to DataFrame.
+        inverse_mapping_path : str
+            Path for inverse mapping file to map symbols to readable TIRPs.
 
         Returns
         -------
@@ -519,6 +522,8 @@ class KarmaLego:
         tree : TreeNode, optional
             Root of internal pattern tree (if return_tree=True).
         """
+        with open(inverse_mapping_path) as f:
+            inverse_symbol_map = json.load(f)
         t0 = time.perf_counter()
 
         # Precompute sorted entities and symbol→positions index once.
@@ -549,18 +554,34 @@ class KarmaLego:
         all_tirps = full_tree.find_tree_nodes()
         filtered = [t for t in all_tirps if t.k >= min_length]
 
+        # Support set comparison for closed/super flags
+        support_sets = [set(t.entity_indices_supporting) for t in filtered]
+        ks = [t.k for t in filtered]
+
+        is_closed = [True] * len(filtered)
+        is_super = [False] * len(filtered)
+
+        for i, (supp_i, k_i) in enumerate(zip(support_sets, ks)):
+            for j, (supp_j, k_j) in enumerate(zip(support_sets, ks)):
+                if i != j:
+                    if supp_i == supp_j:
+                        if k_j > k_i:
+                            is_closed[i] = False
+                        if k_j < k_i:
+                            is_super[i] = True
+
         # Build DataFrame
         records = []
-        for tirp in filtered:
+        for idx, tirp in enumerate(filtered):
             record = {
                 "symbols": tuple(tirp.symbols),
                 "relations": tuple(tirp.relations),
                 "k": tirp.k,
                 "vertical_support": tirp.vertical_support,
-                "support_count": len(set(tirp.entity_indices_supporting)),
-                "entity_indices_supporting": list(set(tirp.entity_indices_supporting)),
-                "indices_of_last_symbol_in_entities": list(tirp.indices_of_last_symbol_in_entities),
                 "tirp_obj": tirp,
+                "tirp_str": decode_pattern(tirp, inverse_symbol_map),
+                "is_closed": is_closed[idx],
+                "is_super_pattern": is_super[idx],
             }
             records.append(record)
 
@@ -611,6 +632,11 @@ class KarmaLego:
         -------
         dict
             patient_id -> {pattern_repr: count or normalized value}
+        
+        NOTE: You can pass this function a pre-calculated list of TIRPs like:
+        patterns_df = karma_lego.discover_patterns(...)
+        tirps = patterns_df['tirp_obj'].tolist()
+        result = karma_lego.apply_patterns_to_entities(entity_list, tirps, patient_ids)
         """
         patient_pattern_counts = {pid: defaultdict(int) for pid in patient_ids}
 

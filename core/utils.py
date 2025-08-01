@@ -132,31 +132,32 @@ def find_all_possible_extensions(all_paths, path, BrC, curr_rel_index, decrement
     return all_paths
 
 
-def vertical_support_symbol(entity_list, symbol):
+def decode_pattern(tirp, inverse_symbol_map):
     """
-    Compute the vertical support of a single symbol across entities.
+    Convert a TIRP's symbols and relations into a human-readable string.
 
-    Vertical support is defined as the fraction of entities that contain at least one occurrence
-    of the given symbol.
+    Example:
+        symbols = [4, 85, 23], relations = ['<', 'o', 'c']
+        -> "Temp < Antibiotics o BP c HR"
 
     Parameters
     ----------
-    entity_list : list
-        List of entities, where each entity is a list of (start, end, symbol) tuples.
-    symbol : hashable
-        The symbol whose support is being measured.
+    tirp : TIRP
+        A pattern instance.
 
     Returns
     -------
-    float
-        Fraction in [0,1] of entities containing the symbol. Returns 0.0 if entity_list is empty.
+    str
+        Decoded pattern: "ConceptName < ConceptName o ConceptName ..."
     """
-    supporting = 0
-    for entity in entity_list:
-        entity_symbols = [sym for _, _, sym in entity]
-        if symbol in entity_symbols:
-            supporting += 1
-    return supporting / len(entity_list) if entity_list else 0.0
+    parts = [inverse_symbol_map.get(str(tirp.symbols[0]), str(tirp.symbols[0]))]
+    relation_index = 0
+    for i in range(1, len(tirp.symbols)):
+        name = inverse_symbol_map.get(str(tirp.symbols[i]), str(tirp.symbols[i]))
+        rel = tirp.relations[relation_index]
+        parts.append(f"{rel} {name}")
+        relation_index += i
+    return " ".join(parts)
 
 
 def count_embeddings_in_single_entity(tirp, entity):

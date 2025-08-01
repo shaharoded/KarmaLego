@@ -6,8 +6,7 @@ from core.io import (
     validate_input,
     build_or_load_mappings,
     preprocess_dataframe,
-    to_entity_list,
-    decode_pattern_symbols,
+    to_entity_list
 )
 from core.karmalego import KarmaLego
 import pandas as pd
@@ -19,7 +18,7 @@ df = pd.read_csv("data/synthetic_diabetes_temporal_data.csv")
 validate_input(df)
 
 # 3. Build mapping (concept+value -> symbol)
-symbol_map, inverse = build_or_load_mappings(df, mapping_dir="data", reuse=True)
+symbol_map, _ = build_or_load_mappings(df, mapping_dir="data", reuse=True)
 
 # 4. Preprocess
 preprocessed = preprocess_dataframe(df, symbol_map)
@@ -31,8 +30,6 @@ entity_list, patient_ids = to_entity_list(preprocessed)
 kl = KarmaLego(epsilon=pd.Timedelta(minutes=1), max_distance=pd.Timedelta(hours=1), min_ver_supp=0.03)  # tune parameters
 patterns_df = kl.discover_patterns(entity_list, min_length=1)  # flat df
 
-# 7. Decode symbols for readability
-patterns_df = decode_pattern_symbols(patterns_df, inverse)
 patterns_df.to_csv("data/discovered_patterns.csv", index=False)
 
 # 8. Apply patterns to patients
