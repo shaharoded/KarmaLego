@@ -913,16 +913,19 @@ class Lego(KarmaLego):
                         )
 
                     new_relations.reverse()  # match original ordering semantics
-                    tirp_copy = deepcopy(tirp)
-                    tirp_copy.extend(new_symbol, new_relations)  # should not fail if logic is correct
-
-                    # set needed metadata
-                    tirp_copy.k = tirp.k + 1
-                    tirp_copy.vertical_support = None
-                    tirp_copy.parent_entity_indices_supporting = tirp.entity_indices_supporting
-                    tirp_copy.entity_indices_supporting = []
-                    tirp_copy.indices_of_last_symbol_in_entities = []
-                    all_possible.append(tirp_copy)
+                    child = TIRP(
+                    epsilon=self.epsilon,
+                    max_distance=self.max_distance,
+                    min_ver_supp=self.min_ver_supp,
+                    symbols=[*tirp.symbols, new_symbol],
+                    relations=[*tirp.relations, *new_relations],
+                    k=tirp.k + 1,
+                    )
+                    # SAC: propagate parent-supported entities; CSAC propagation will follow below
+                    child.parent_entity_indices_supporting = list(tirp.entity_indices_supporting)
+                    child.entity_indices_supporting = []
+                    child.indices_of_last_symbol_in_entities = []
+                    all_possible.append(child)
         return all_possible
 
 
