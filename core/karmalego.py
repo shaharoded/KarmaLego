@@ -675,7 +675,7 @@ class KarmaLego:
             Use count_strategy="all" to count every embedding if desired.
             - "tpf-dist": min-max normalize the horizontal support across patients (per pattern) to [0,1].
             - "tpf-duration": for each patient, sum the UNION of embedding spans
-            (start(first symbol) to end(last symbol)), then min–max normalize across patients (per pattern).
+            (start(first symbol) to end(last symbol)), then min-max normalize across patients (per pattern).
         count_strategy : {"unique_last","all"}
             Strategy for horizontal support counting (see above).
 
