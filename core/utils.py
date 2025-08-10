@@ -1,4 +1,3 @@
-from copy import deepcopy
 import pandas as pd
 import numpy as np
 from core.relation_table import compose_relation
@@ -132,7 +131,7 @@ def find_all_possible_extensions(all_paths, path, BrC, curr_rel_index, decrement
         The same `all_paths` object, extended with each valid predecessor relation sequence.
     """
     if curr_rel_index < 0:
-        all_paths.append(deepcopy(path))
+        all_paths.append(tuple(path))
         return all_paths
 
     ArB = TIRP_relations[curr_rel_index]

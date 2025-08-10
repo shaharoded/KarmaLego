@@ -10,9 +10,9 @@ def simple_patient_entities():
       - p3: A before C
     Each entity is [(start, end, symbol), ...]
     """
-    p1 = [(0, 1, "A"), (2, 3, "B")]  # A before B
-    p2 = [(0, 2, "A"), (1, 3, "B")]  # A overlaps B
-    p3 = [(0, 1, "A"), (2, 3, "C")]  # A before C
+    p1 = [(0, 1, "A"), (2, 3, "B")]  # A < B
+    p2 = [(0, 2, "A"), (1, 3, "B")]  # A o B
+    p3 = [(0, 1, "A"), (2, 3, "C")]  # A < C
     entities = [p1, p2, p3]
     patient_ids = ["p1", "p2", "p3"]
     return entities, patient_ids
@@ -20,79 +20,157 @@ def simple_patient_entities():
 
 def extract_pattern_by_signature(patterns, symbols, relations):
     """
-    Helper to find a TIRP by exact symbols & relations signature.
-    Accepts either a list of TIRP objects or a DataFrame-like with 'tirp_obj' column.
+    Find a TIRP by exact (symbols, relations).
+    Supports list[TIRP] or DataFrame with column 'tirp_obj'.
     """
-    tirp_list = []
-    # patterns may be a DataFrame
-    try:
-        # pandas DataFrame or similar
+    # normalize to list of TIRPs
+    if hasattr(patterns, "iterrows"):
         tirp_list = [row["tirp_obj"] for _, row in patterns.iterrows()]
-    except Exception:
+    else:
         tirp_list = list(patterns)
-
     for p in tirp_list:
         if p.symbols == symbols and tuple(p.relations) == tuple(relations):
             return p
     return None
 
 
-def test_full_pipeline_discovery_and_application(simple_patient_entities):
+def test_full_pipeline_and_apply_modes(simple_patient_entities):
     entities, patient_ids = simple_patient_entities
-    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1 / 3)
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/3)
 
-    # discover patterns: flat DataFrame + list of TIRPs
+    # Discover patterns: df + list
     df, tirps = kl.discover_patterns(entities, min_length=1, return_tirps=True)
 
-    # Expect singletons A,B,C
-    tirp_A = extract_pattern_by_signature(tirps, ["A"], [])
-    tirp_B = extract_pattern_by_signature(tirps, ["B"], [])
-    tirp_C = extract_pattern_by_signature(tirps, ["C"], [])
-    assert tirp_A is not None, "Singleton A should be discovered"
-    assert tirp_B is not None, "Singleton B should be discovered"
-    assert tirp_C is not None, "Singleton C should be discovered"
+    # Expect singletons
+    tA = extract_pattern_by_signature(tirps, ["A"], [])
+    tB = extract_pattern_by_signature(tirps, ["B"], [])
+    tC = extract_pattern_by_signature(tirps, ["C"], [])
+    assert tA and tB and tC
 
-    # Expect pair patterns (using relation codes from temporal_relations): '<' for before, 'o' for overlaps
-    tirp_Ab = extract_pattern_by_signature(tirps, ["A", "B"], ["<"])
-    tirp_Ao = extract_pattern_by_signature(tirps, ["A", "B"], ["o"])
-    tirp_Ac = extract_pattern_by_signature(tirps, ["A", "C"], ["<"])
+    # Expect pairs ('<' before, 'o' overlaps)
+    tA_B_before = extract_pattern_by_signature(tirps, ["A", "B"], ["<"])
+    tA_B_overlap = extract_pattern_by_signature(tirps, ["A", "B"], ["o"])
+    tA_C_before = extract_pattern_by_signature(tirps, ["A", "C"], ["<"])
+    assert tA_B_before and tA_B_overlap and tA_C_before
 
-    assert tirp_Ab is not None, "Pattern A before B should be discovered"
-    assert tirp_Ao is not None, "Pattern A overlaps B should be discovered"
-    assert tirp_Ac is not None, "Pattern A before C should be discovered"
+    # Vertical support: each pair appears in exactly one patient (1/3)
+    import math
+    assert math.isclose(tA_B_before.vertical_support, 1/3, rel_tol=1e-6)
+    assert math.isclose(tA_B_overlap.vertical_support, 1/3, rel_tol=1e-6)
+    assert math.isclose(tA_C_before.vertical_support, 1/3, rel_tol=1e-6)
 
-    # Verify vertical supports for those pair patterns: each appears exactly in one patient (1/3)
-    assert pytest.approx(tirp_Ab.vertical_support, rel=1e-3) == 1 / 3
-    assert pytest.approx(tirp_Ao.vertical_support, rel=1e-3) == 1 / 3
-    assert pytest.approx(tirp_Ac.vertical_support, rel=1e-3) == 1 / 3
+    # ---- Apply: tirp-count (unique_last) ----
+    applied_count_ul = kl.apply_patterns_to_entities(
+        entities, df, patient_ids, mode="tirp-count", count_strategy="unique_last"
+    )
+    # p1 has A, B, A<B
+    assert applied_count_ul["p1"][repr(tA)] == 1
+    assert applied_count_ul["p1"][repr(tB)] == 1
+    assert applied_count_ul["p1"][repr(tA_B_before)] == 1
+    assert repr(tA_B_overlap) not in applied_count_ul["p1"]
+    # p2 has A, B, A o B
+    assert applied_count_ul["p2"][repr(tA)] == 1
+    assert applied_count_ul["p2"][repr(tB)] == 1
+    assert applied_count_ul["p2"][repr(tA_B_overlap)] == 1
+    assert repr(tA_B_before) not in applied_count_ul["p2"]
+    # p3 has A, C, A<C
+    assert applied_count_ul["p3"][repr(tA)] == 1
+    assert applied_count_ul["p3"][repr(tC)] == 1
+    assert applied_count_ul["p3"][repr(tA_C_before)] == 1
+    assert repr(tA_B_before) not in applied_count_ul["p3"]
+    assert repr(tA_B_overlap) not in applied_count_ul["p3"]
 
-    # Apply patterns to entities (raw counts). Can pass the DataFrame directly since it has tirp_obj column.
-    applied = kl.apply_patterns_to_entities(entities, df, patient_ids, tpp=False)
+    # ---- Apply: tirp-count (all) should match here (only one embedding each) ----
+    applied_count_all = kl.apply_patterns_to_entities(
+        entities, df, patient_ids, mode="tirp-count", count_strategy="all"
+    )
+    assert applied_count_all == applied_count_ul
 
-    # p1 has A, B, A before B
-    assert applied["p1"][repr(tirp_A)] == 1
-    assert applied["p1"][repr(tirp_B)] == 1
-    assert applied["p1"][repr(tirp_Ab)] == 1
-    assert repr(tirp_Ao) not in applied["p1"]
+    # ---- Apply: tpf-dist (min–max across cohort per pattern) ----
+    applied_tpf_dist = kl.apply_patterns_to_entities(
+        entities, df, patient_ids, mode="tpf-dist", count_strategy="unique_last"
+    )
+    # Each pair appears in exactly one patient -> normalized to 1 for that patient, 0 for others
+    assert applied_tpf_dist["p1"].get(repr(tA_B_before), 0.0) == 1.0
+    assert applied_tpf_dist["p2"].get(repr(tA_B_before), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(repr(tA_B_before), 0.0) == 0.0
 
-    # p2 has A, B, A overlaps B
-    assert applied["p2"][repr(tirp_A)] == 1
-    assert applied["p2"][repr(tirp_B)] == 1
-    assert applied["p2"][repr(tirp_Ao)] == 1
-    assert repr(tirp_Ab) not in applied["p2"]
+    assert applied_tpf_dist["p2"].get(repr(tA_B_overlap), 0.0) == 1.0
+    assert applied_tpf_dist["p1"].get(repr(tA_B_overlap), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(repr(tA_B_overlap), 0.0) == 0.0
 
-    # p3 has A, C, A before C
-    assert applied["p3"][repr(tirp_A)] == 1
-    assert applied["p3"][repr(tirp_C)] == 1
-    assert applied["p3"][repr(tirp_Ac)] == 1
-    assert repr(tirp_Ab) not in applied["p3"]
-    assert repr(tirp_Ao) not in applied["p3"]
+    assert applied_tpf_dist["p3"].get(repr(tA_C_before), 0.0) == 1.0
+    assert applied_tpf_dist["p1"].get(repr(tA_C_before), 0.0) == 0.0
+    assert applied_tpf_dist["p2"].get(repr(tA_C_before), 0.0) == 0.0
 
-    # TPP normalization: each patient has 3 total occurrences -> each pattern is 1/3
-    applied_tpp = kl.apply_patterns_to_entities(entities, df, patient_ids, tpp=True)
-    for pid in patient_ids:
-        vector = applied_tpp[pid]
-        total = sum(vector.values())
-        assert pytest.approx(total, rel=1e-3) == 1.0
-        for val in vector.values():
-            assert pytest.approx(val, rel=1e-3) == 1 / 3
+    # Singletons: A appears in all 3 patients with count=1 → min=max → normalized to 0.0 per our rule
+    assert applied_tpf_dist["p1"].get(repr(tA), 0.0) == 0.0
+    assert applied_tpf_dist["p2"].get(repr(tA), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(repr(tA), 0.0) == 0.0
+    # B appears in p1 & p2 only -> [1,1,0] → normalized [1,1,0]
+    assert applied_tpf_dist["p1"].get(repr(tB), 0.0) == 1.0
+    assert applied_tpf_dist["p2"].get(repr(tB), 0.0) == 1.0
+    assert applied_tpf_dist["p3"].get(repr(tB), 0.0) == 0.0
+    # C appears only in p3 -> [0,0,1] → normalized [0,0,1]
+    assert applied_tpf_dist["p1"].get(repr(tC), 0.0) == 0.0
+    assert applied_tpf_dist["p2"].get(repr(tC), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(repr(tC), 0.0) == 1.0
+
+    # ---- Apply: tpf-duration (union span per patient, then min–max per pattern) ----
+    applied_tpf_dur = kl.apply_patterns_to_entities(
+        entities, df, patient_ids, mode="tpf-duration", count_strategy="unique_last"
+    )
+    # For pairs, each span is 3 (end_last - start_first) for the patient that has it, then normalized to 1
+    assert applied_tpf_dur["p1"].get(repr(tA_B_before), 0.0) == 1.0
+    assert applied_tpf_dur["p2"].get(repr(tA_B_before), 0.0) == 0.0
+    assert applied_tpf_dur["p3"].get(repr(tA_B_before), 0.0) == 0.0
+
+    assert applied_tpf_dur["p2"].get(repr(tA_B_overlap), 0.0) == 1.0
+    assert applied_tpf_dur["p1"].get(repr(tA_B_overlap), 0.0) == 0.0
+    assert applied_tpf_dur["p3"].get(repr(tA_B_overlap), 0.0) == 0.0
+
+    assert applied_tpf_dur["p3"].get(repr(tA_C_before), 0.0) == 1.0
+    assert applied_tpf_dur["p1"].get(repr(tA_C_before), 0.0) == 0.0
+    assert applied_tpf_dur["p2"].get(repr(tA_C_before), 0.0) == 0.0
+
+    # Singletons: each span is 1 for the patient who has it; normalized behaves like tpf-dist:
+    # A in all → 0; B in p1,p2 → 1,1,0; C in p3 → 0,0,1
+    assert applied_tpf_dur["p1"].get(repr(tA), 0.0) == 0.0
+    assert applied_tpf_dur["p2"].get(repr(tA), 0.0) == 0.0
+    assert applied_tpf_dur["p3"].get(repr(tA), 0.0) == 0.0
+
+    assert applied_tpf_dur["p1"].get(repr(tB), 0.0) == 1.0
+    assert applied_tpf_dur["p2"].get(repr(tB), 0.0) == 1.0
+    assert applied_tpf_dur["p3"].get(repr(tB), 0.0) == 0.0
+
+    assert applied_tpf_dur["p1"].get(repr(tC), 0.0) == 0.0
+    assert applied_tpf_dur["p2"].get(repr(tC), 0.0) == 0.0
+    assert applied_tpf_dur["p3"].get(repr(tC), 0.0) == 1.0
+
+
+def test_count_strategy_unique_last_vs_all_for_ABC_case():
+    """
+    Single patient with A…B…A…B…C.
+    For pattern A<B<C:
+      - unique_last should count 1
+      - all should count 3
+    """
+    p = [(0,1,"A"), (2,3,"B"), (4,5,"A"), (6,7,"B"), (8,9,"C")]
+    entities = [p]
+    patient_ids = ["p1"]
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1.0)
+
+    # Discover and grab A<B<C
+    df, tirps = kl.discover_patterns(entities, min_length=1, return_tirps=True)
+    target = extract_pattern_by_signature(tirps, ["A","B","C"], ["<","<"])
+    assert target is not None
+
+    # Apply with unique_last
+    v_ul = kl.apply_patterns_to_entities(entities, [target], patient_ids,
+                                         mode="tirp-count", count_strategy="unique_last")
+    # Apply with all
+    v_all = kl.apply_patterns_to_entities(entities, [target], patient_ids,
+                                          mode="tirp-count", count_strategy="all")
+
+    assert v_ul["p1"][repr(target)] == 1
+    assert v_all["p1"][repr(target)] == 3
