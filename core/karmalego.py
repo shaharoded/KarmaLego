@@ -163,6 +163,8 @@ class TIRP:
     parent_entity_indices_supporting : if extension of a parent, the parent-supporting indices to restrict search.
     indices_of_last_symbol_in_entities : for each supporting entity, the index of the last symbol in its embedding.
     _hash_cache : cached hash value to avoid recomputing in repeated set/dict usage.
+    parent_embeddings_map: dict[int -> list[tuple]] parent embeddings per entity.
+    embeddings_map: dict[int -> list[tuple]] this TIRP's embeddings per entity
     """
 
     __slots__ = (
@@ -177,6 +179,8 @@ class TIRP:
         "parent_entity_indices_supporting",
         "indices_of_last_symbol_in_entities",
         "_hash_cache",
+        "parent_embeddings_map",
+        "embeddings_map",      
     )
 
     def __init__(self, epsilon, max_distance, min_ver_supp, symbols=None, relations=None, k=1,
@@ -242,7 +246,11 @@ class TIRP:
         self.entity_indices_supporting = [] if indices_supporting is None else list(indices_supporting)
         self.parent_entity_indices_supporting = None if parent_indices_supporting is None else list(parent_indices_supporting)
         self.indices_of_last_symbol_in_entities = [] if indices_of_last_symbol_in_entities is None else list(indices_of_last_symbol_in_entities)
-        self._hash_cache = None  # lazily populated
+        
+        # lazily populated:
+        self._hash_cache = None
+        self.parent_embeddings_map = None
+        self.embeddings_map = None
 
     def __eq__(self, other):
         """
@@ -432,11 +440,11 @@ class TIRP:
             if matching_options is None:
                 continue
 
+            valid_embeddings_here = []
             for matching_option in matching_options:
                 all_relations_match = True
                 relation_index = 0
 
-                # Walk the implied upper-triangular structure of relations.
                 for column_count, entity_index in enumerate(matching_option[1:]):
                     for row_count in range(column_count + 1):
                         ti_1 = entity_ti[matching_option[row_count]]
@@ -451,10 +459,27 @@ class TIRP:
                         break
 
                 if all_relations_match:
+                    valid_embeddings_here.append(matching_option)
+
+            # CSAC: if parent embeddings exist for this entity, keep only tuples that extend a parent tuple
+            if valid_embeddings_here:
+                if getattr(self, "parent_embeddings_map", None) and orig_idx in self.parent_embeddings_map:
+                    parent_tuples = set(self.parent_embeddings_map[orig_idx])
+                    p_len = len(next(iter(parent_tuples))) if parent_tuples else 0
+                    valid_embeddings_here = [t for t in valid_embeddings_here if tuple(t[:p_len]) in parent_tuples]
+
+                if valid_embeddings_here:
                     supporting_reduced.add(reduced_idx)
-                    last_symbol = matching_option[-1]
-                    last_symbol_map.setdefault(orig_idx, set()).add(last_symbol)
-                    break  # only one valid embedding per entity is enough
+                    # record all last indices for extension anchoring
+                    for tup in valid_embeddings_here:
+                        last_symbol = tup[-1]
+                        last_symbol_map.setdefault(orig_idx, set()).add(last_symbol)
+                    # store embeddings
+                    if self.embeddings_map is None:
+                        self.embeddings_map = {}
+                    # de-dupe tuples per entity
+                    seen = set(tuple(t) for t in valid_embeddings_here)
+                    self.embeddings_map.setdefault(orig_idx, []).extend(sorted(seen))
 
         # Translate reduced support indices back to original entity indices
         new_supporting = set()
@@ -732,6 +757,12 @@ class Karma(KarmaLego):
                             relations=[],
                             k=1,
                         )
+                        # Build embeddings_map: eid -> [(pos,)]
+                        emb = defaultdict(list)
+                        for pos, eid in supporting_pairs:
+                            emb[eid].append((pos,))
+                        # de-dupe & assign
+                        tirp_single.embeddings_map = {eid: sorted(set(tups)) for eid, tups in emb.items()}
                         tirp_single.entity_indices_supporting = entity_indices_supporting
                         tirp_single.indices_of_last_symbol_in_entities = indices_of_last_symbol_in_entities
                         tirp_single.vertical_support = vertical_support
@@ -770,11 +801,13 @@ class Karma(KarmaLego):
                         if key not in tirp_dict:
                             tirp.entity_indices_supporting = [eid]
                             tirp.indices_of_last_symbol_in_entities = [j]
+                            tirp.embeddings_map = {eid: [(i, j)]}
                             tirp_dict[key] = tirp
                         else:
                             existing = tirp_dict[key]
                             existing.entity_indices_supporting.append(eid)
                             existing.indices_of_last_symbol_in_entities.append(j)
+                            existing.embeddings_map.setdefault(eid, []).append((i, j))
                         karma_bar.update(1)  # one unit per pair attempted
 
             # finalize pairs and attach
@@ -785,6 +818,11 @@ class Karma(KarmaLego):
                         sym_idxs, ent_idxs = zip(*unique)
                         tirp.indices_of_last_symbol_in_entities = list(sym_idxs)
                         tirp.entity_indices_supporting = list(ent_idxs)
+                
+                # de-dupe embeddings per entity (CSAC hygiene)
+                if tirp.embeddings_map:
+                    tirp.embeddings_map = {eid: sorted(set(tups)) for eid, tups in tirp.embeddings_map.items()}
+                
                 tirp.vertical_support = len(set(tirp.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
 
                 if tirp.vertical_support >= self.min_ver_supp:
@@ -840,7 +878,7 @@ class Lego(KarmaLego):
             while queue:
                 current = queue.pop(0)
                 if isinstance(current.data, TIRP):
-                    extensions = list(set(self.all_extensions(entity_list, current.data)))
+                    extensions = list(set(self.all_extensions(entity_list, current.data, precomputed)))
                     ok = []
                     iterator = extensions
                     if self.show_detail:
@@ -860,7 +898,7 @@ class Lego(KarmaLego):
                 bar.update(1)
         return node
 
-    def all_extensions(self, entity_list, tirp):
+    def all_extensions(self, entity_list, tirp, precomputed):
         """
         Enumerate candidate one-symbol extensions of a given TIRP.
 
@@ -873,6 +911,9 @@ class Lego(KarmaLego):
             All entities to base extension on.
         tirp :
             Base TIRP to extend.
+        precomputed:   
+            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
+            and 'symbol_index' (symbol -> positions within that entity). 
 
         Returns
         -------
@@ -881,10 +922,28 @@ class Lego(KarmaLego):
         """
         curr_num_of_symbols = len(tirp.symbols)
         all_possible = []
-        for sym_index, ent_index in zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting):
-            lexi_entity = lexicographic_sorting(entity_list[ent_index])
+
+        # Prefer embedding-aware enumeration for CSAC
+        sources = []
+        if getattr(tirp, "embeddings_map", None):
+            for ent_index, tuples in tirp.embeddings_map.items():
+                for tup in tuples:
+                    sources.append((tup[-1], ent_index, tup))
+        else:
+            # fallback to legacy last-index heuristic
+            sources = [(sym_idx, ent_idx, None)
+                       for sym_idx, ent_idx in zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting)]
+        
+        for sym_index, ent_index, parent_tuple in sources:
+            # Use precomputed sorted entity to avoid re-sorting
+            if precomputed is not None:
+                lexi_entity = precomputed[ent_index]["sorted"]
+            else:
+                lexi_entity = lexicographic_sorting(entity_list[ent_index])
+
             if curr_num_of_symbols >= len(lexi_entity):
                 continue
+            
             for after_sym in lexi_entity[sym_index + 1 :]:
                 *new_ti, new_symbol = after_sym
                 rel_last_new = temporal_relations(
@@ -914,15 +973,16 @@ class Lego(KarmaLego):
 
                     new_relations.reverse()  # match original ordering semantics
                     child = TIRP(
-                    epsilon=self.epsilon,
-                    max_distance=self.max_distance,
-                    min_ver_supp=self.min_ver_supp,
-                    symbols=[*tirp.symbols, new_symbol],
-                    relations=[*tirp.relations, *new_relations],
-                    k=tirp.k + 1,
+                        epsilon=self.epsilon,
+                        max_distance=self.max_distance,
+                        min_ver_supp=self.min_ver_supp,
+                        symbols=[*tirp.symbols, new_symbol],
+                        relations=[*tirp.relations, *new_relations],
+                        k=tirp.k + 1,
                     )
-                    # SAC: propagate parent-supported entities; CSAC propagation will follow below
+                    # CSAC propagation
                     child.parent_entity_indices_supporting = list(tirp.entity_indices_supporting)
+                    child.parent_embeddings_map = tirp.embeddings_map
                     child.entity_indices_supporting = []
                     child.indices_of_last_symbol_in_entities = []
                     all_possible.append(child)
