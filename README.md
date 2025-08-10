@@ -6,7 +6,7 @@ Based on the paper:
 *Moskovitch, Robert, and Yuval Shahar. "Temporal Patterns Discovery from Multivariate Time Series via Temporal Abstraction and Time-Interval Mining."*  
 (See [original](https://pmc.ncbi.nlm.nih.gov/articles/PMC2815492/) for theoretical grounding.)
 
-This implementation is inspired by **markozeman** implementation, available on this [link](https://github.com/markozeman/KarmaLego), and is designed to be used as an temporal analysis tool in my thesis.
+This implementation is designed to be used as an temporal analysis tool in my thesis.
 
 ## How KarmaLego Works
 
