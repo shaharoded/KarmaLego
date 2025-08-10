@@ -44,7 +44,7 @@ This structure enables efficient discovery of high-order, temporally consistent 
 This repository provides:
 - A **clean, efficient implementation** of KarmaLego (Karma + Lego) for discovering frequent Time Interval Relation Patterns (TIRPs).
 - Support for **pandas / Dask-backed ingestion** of clinical-style interval data.
-- Symbol encoding, pattern mining, and per-patient pattern application (counts or normalized distributions).
+- Symbol encoding, pattern mining, and per-patient pattern application (apply modes: counts and cohort-normalized features).
 - Utilities for managing temporal relations, pattern equality/deduplication, and tree-based extension.
 
 The design goals are: **clarity, performance, testability, and reproducibility**.
@@ -155,7 +155,7 @@ You have full flexibility to affect the input and output shapes and formats in t
 
 Example row:
 ```
-PatientID,ConceptName,StartTime,EndTime,Value
+PatientID,ConceptName,StartDateTime,EndDateTime,Value
 p1,HbA1c,08/01/2023 0:00,08/01/2023 0:15,High
 ```
 
@@ -172,8 +172,8 @@ The provided `main.py` demonstrates the full pipeline:
 5. **Convert to entity_list** (list of per-patient interval sequences).
 6. **Discover patterns** using KarmaLego.
 7. **Decode patterns** back to human-readable symbol strings.
-8. **Apply patterns to each patient** (raw counts or TPP-normalized vectors).
-9. **Persist outputs**: patterns CSV and patient-pattern matrix.
+8. **Apply patterns** to each patient using the apply modes (see below): `tirp-count`, `tpf-dist`, `tpf-duration`.
+9. **Persist outputs:** discovered_patterns.csv and a single wide CSV with five feature columns per pattern.
 
 Example invocation:
 
@@ -182,10 +182,11 @@ python main.py
 ```
 
 This produces:
-- `discovered_patterns.csv` : flat table of frequent TIRPs with support and decoded symbols.
-- `patient_pattern_vectors.csv` : long-form per-patient pattern distribution (normalized if TPP=True).
+- `discovered_patterns.csv` — flat table of frequent TIRPs with support and decoded symbols.
+- `patient_pattern_vectors.ALL.csv` — one row per (PatientID, Pattern) with 5 columns:
+    tirp_count_unique_last, tirp_count_all, tpf_dist_unique_last, tpf_dist_all, tpf_duration
 
-You can pivot `patient_pattern_vectors.csv` to a wide feature matrix for modeling.
+You can pivot `patient_pattern_vectors.ALL.csv` to a wide feature matrix for modeling.
 
 ---
 
@@ -194,13 +195,27 @@ You can pivot `patient_pattern_vectors.csv` to a wide feature matrix for modelin
 - `epsilon` : temporal tolerance for equality/meet decisions (same unit as your preprocessed timestamps). If source columns were datetimes, they are converted to ns, so you may pass a numeric ns value or a `pd.Timedelta`.
 - `max_distance` : maximum gap between intervals to still consider them related (e.g., 1 hour → `pd.Timedelta(hours=1)`), same unit rule as above.
 - `min_ver_supp` : minimum vertical support threshold (fraction of patients that must exhibit a pattern for it to be retained).
-- `TPP` : normalized per-patient pattern distribution (pattern counts divided by total patterns for that patient).
+
+### Apply Modes
+
+- `tirp-count`  
+  Horizontal support per patient. Counting strategy:
+  - **unique_last (default):** count **one** occurrence per **distinct last-symbol index** among valid embeddings (e.g., in `A…B…A…B…C`, `A<B<C` counts **1**).
+  - **all:** count **every embedding**.
+
+- `tpf-dist`  
+  Min–max normalize the `tirp-count` values across the cohort **per pattern** into **[0,1]**.
+
+- `tpf-duration`  
+  For each patient/pattern, sum the **union** of embedding spans (from start of the first interval to end of the last) so overlapping time is **not** double-counted; then min–max normalize across the cohort **per pattern** into **[0,1]**.
 
 --- 
 
 ## Support Semantics (Horizontal vs Vertical)
-- **Horizontal support (per entity):** number of embeddings (index-tuples) of the TIRP found in a given entity. We count all valid embeddings (not just non-overlapping), matching the standard KarmaLego literature.
-Example: In `A…B…A…B…C`, the pattern `A…B…C` has 3 embeddings: `(A₀,B₁,C₄)`, `(A₀,B₃,C₄)`, `(A₂,B₃,C₄)`.
+- **Horizontal support (per entity):** number of embeddings (index-tuples) of the TIRP found in a given entity.  
+  **Discovery** counts **all** valid embeddings (standard KarmaLego).  
+  **Apply** offers a strategy: **unique_last** (one per distinct last index; default) or **all** (every embedding).  
+  *Example:* In `A…B…A…B…C`, the pattern `A…B…C` has 3 embeddings; discovery counts 3 `(A₀,B₁,C₄)`, `(A₀,B₃,C₄)`, `(A₂,B₃,C₄)`, while `tirp-count` with `unique_last` counts 1.
 
 - **Vertical support (dataset level):** fraction of entities that have at least one embedding of the TIRP.
 
@@ -225,7 +240,36 @@ df_patterns = kl.discover_patterns(entity_list, min_length=1)  # returns DataFra
 ### Apply to Patients
 
 ```python
-patient_vectors = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids, tpp=True)
+# Build all 5 feature columns in one CSV
+rep_to_str = {repr(t): s for t, s in zip(df_patterns["tirp_obj"], df_patterns["tirp_str"])}
+pattern_keys = [repr(t) for t in df_patterns["tirp_obj"]]
+
+vec_count_ul = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
+                                             mode="tirp-count", count_strategy="unique_last")
+vec_count_all = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
+                                              mode="tirp-count", count_strategy="all")
+vec_tpf_dist_ul = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
+                                                mode="tpf-dist", count_strategy="unique_last")
+vec_tpf_dist_all = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
+                                                 mode="tpf-dist", count_strategy="all")
+vec_tpf_duration = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
+                                                 mode="tpf-duration", count_strategy="unique_last")
+
+rows = []
+for pid in patient_ids:
+    for rep in pattern_keys:
+        rows.append({
+            "PatientID": pid,
+            "Pattern": rep_to_str.get(rep, rep),
+            "tirp_count_unique_last": vec_count_ul.get(pid, {}).get(rep, 0.0),
+            "tirp_count_all":         vec_count_all.get(pid, {}).get(rep, 0.0),
+            "tpf_dist_unique_last":   vec_tpf_dist_ul.get(pid, {}).get(rep, 0.0),
+            "tpf_dist_all":           vec_tpf_dist_all.get(pid, {}).get(rep, 0.0),
+            "tpf_duration":           vec_tpf_duration.get(pid, {}).get(rep, 0.0),
+        })
+
+import pandas as pd
+pd.DataFrame(rows).to_csv("data/patient_pattern_vectors.ALL.csv", index=False)
 ```
 
 ---
@@ -262,13 +306,18 @@ Contains:
 - `tirp_obj` (internal object; drop before sharing)
 - `symbols_readable` (if decoded)
 
-### Patient Pattern Vectors
-Long format: `PatientID, Pattern (repr), Value (count or normalized)`.  
-You can pivot for modeling:
+### Patient Pattern Vectors (`patient_pattern_vectors.ALL.csv`)
 
-```python
-wide = df_vec.pivot(index="PatientID", columns="Pattern", values="Value").fillna(0)
-```
+Wide long format: one row per (PatientID, Pattern) with the following columns:
+
+- `tirp_count_unique_last` — horizontal support per patient using **unique_last** counting.
+- `tirp_count_all` — horizontal support per patient counting **all** embeddings.
+- `tpf_dist_unique_last` — min–max of `tirp_count_unique_last` across patients, per pattern.
+- `tpf_dist_all` — min–max of `tirp_count_all` across patients, per pattern.
+- `tpf_duration` — **union** of embedding spans per patient (no overlap double-counting), then min–max across patients, per pattern.
+
+> Note: `tpf-*` values are normalized **per pattern** to [0,1] across the cohort.  
+> Example for singletons: if `A` spans are `[1,2,1]` across patients, they normalize to `[0.0, 1.0, 0.0]`.
 
 ---
 
