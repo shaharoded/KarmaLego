@@ -503,6 +503,10 @@ class TIRP:
 
         # Final vertical support is with respect to the full original entity list.
         self.vertical_support = len(set(self.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
+        
+        # CSAC memory hygiene: we no longer need the parent's embeddings after filtering.
+        self.parent_embeddings_map = None
+        
         return self.vertical_support >= self.min_ver_supp
 
 
@@ -890,6 +894,11 @@ class Lego(KarmaLego):
                     for ext in iterator:
                         if ext.is_above_vertical_support(entity_list, precomputed=precomputed):
                             ok.append(ext)
+                    
+                    # If this node cannot be extended, free its stored embeddings to save memory.
+                    if not ok and isinstance(current.data, TIRP):
+                        current.data.embeddings_map = None
+                    
                     for ext in ok:
                         child = TreeNode(ext)
                         current.add_child(child)
