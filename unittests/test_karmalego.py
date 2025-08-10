@@ -133,19 +133,21 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
     assert applied_tpf_dur["p1"].get(repr(tA_C_before), 0.0) == 0.0
     assert applied_tpf_dur["p2"].get(repr(tA_C_before), 0.0) == 0.0
 
-    # Singletons: each span is 1 for the patient who has it; normalized behaves like tpf-dist:
-    # A in all → 0; B in p1,p2 → 1,1,0; C in p3 → 0,0,1
-    assert applied_tpf_dur["p1"].get(repr(tA), 0.0) == 0.0
-    assert applied_tpf_dur["p2"].get(repr(tA), 0.0) == 0.0
-    assert applied_tpf_dur["p3"].get(repr(tA), 0.0) == 0.0
+    # Singletons: spans then per-pattern min–max
+    # A spans: [1, 2, 1] -> [0.0, 1.0, 0.0]
+    assert applied_tpf_dur["p1"].get(repr(tA), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p2"].get(repr(tA), 0.0) == pytest.approx(1.0)
+    assert applied_tpf_dur["p3"].get(repr(tA), 0.0) == pytest.approx(0.0)
 
-    assert applied_tpf_dur["p1"].get(repr(tB), 0.0) == 1.0
-    assert applied_tpf_dur["p2"].get(repr(tB), 0.0) == 1.0
-    assert applied_tpf_dur["p3"].get(repr(tB), 0.0) == 0.0
+    # B spans: [1, 2, 0] -> [(1-0)/(2-0)=0.5, 1.0, 0.0]
+    assert applied_tpf_dur["p1"].get(repr(tB), 0.0) == pytest.approx(0.5)
+    assert applied_tpf_dur["p2"].get(repr(tB), 0.0) == pytest.approx(1.0)
+    assert applied_tpf_dur["p3"].get(repr(tB), 0.0) == pytest.approx(0.0)
 
-    assert applied_tpf_dur["p1"].get(repr(tC), 0.0) == 0.0
-    assert applied_tpf_dur["p2"].get(repr(tC), 0.0) == 0.0
-    assert applied_tpf_dur["p3"].get(repr(tC), 0.0) == 1.0
+    # C spans: [0, 0, 1] -> [0.0, 0.0, 1.0]
+    assert applied_tpf_dur["p1"].get(repr(tC), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p2"].get(repr(tC), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p3"].get(repr(tC), 0.0) == pytest.approx(1.0)
 
 
 def test_count_strategy_unique_last_vs_all_for_ABC_case():
@@ -162,7 +164,7 @@ def test_count_strategy_unique_last_vs_all_for_ABC_case():
 
     # Discover and grab A<B<C
     df, tirps = kl.discover_patterns(entities, min_length=1, return_tirps=True)
-    target = extract_pattern_by_signature(tirps, ["A","B","C"], ["<","<"])
+    target = extract_pattern_by_signature(tirps, ["A","B","C"], ["<","<", "<"])
     assert target is not None
 
     # Apply with unique_last
