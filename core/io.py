@@ -1,36 +1,90 @@
 import os
 import json
+import numpy as np
 import pandas as pd
 import dask.dataframe as dd
-from typing import Tuple, Dict, Union
+from typing import Tuple, Dict, Union, Optional
 
 REQUIRED_COLUMNS = {"PatientID", "ConceptName", "StartDateTime", "EndDateTime", "Value"}
 
 
-def _parse_datetime_series(series, dayfirst: bool = True) -> pd.Series:
+def _parse_datetime_to_ns(series: pd.Series) -> Optional[pd.Series]:
     """
-    Parse a Series of datetime-like strings with a preference for day-first ordering,
-    falling back gracefully if needed.
-
-    Parameters
-    ----------
-    series : pd.Series
-        Input string series representing timestamps.
-    dayfirst : bool
-        Whether to interpret ambiguous dates as day-first (e.g., '13/01/2023').
-
-    Returns
-    -------
-    pd.Series
-        Parsed datetime series. If fallback parsing fails for some entries, they become NaT.
+    Robust datetime parser:
+      - Trims & normalizes whitespace
+      - Zero-pads single-digit hours (" 1:23" -> " 01:23")
+      - Tries multiple parsing strategies and picks the one with fewest NaT
+      - Returns int64 ns on full success, None if nothing looks like a date
+      - Raises if partially parseable (some NaT remain)
     """
-    try:
-        # Primary attempt with dayfirst
-        return pd.to_datetime(series, dayfirst=dayfirst, errors="raise")
-    except Exception:
-        # Fallback: try without dayfirst, coercing invalids to NaT
-        return pd.to_datetime(series, errors="coerce")
-    
+    # Work on a clean string view
+    s = series.astype(str).str.strip().str.replace("\u00A0", " ", regex=False)
+
+    # Zero-pad single-digit hours after a space before colon: ' 1:' -> ' 01:'
+    # (Windows-compatible; we avoid %-H)
+    s = s.str.replace(r"(\s)(\d):", r"\g<1>0\2:", regex=True)
+
+    candidates = []
+
+    # 1) Generic parses (dayfirst False/True)
+    for dayfirst in (False, True):
+        dt = pd.to_datetime(s, errors="coerce", dayfirst=dayfirst)
+        candidates.append(dt)
+
+    # 2) Common explicit formats (seconds optional)
+    for fmt in ("%m/%d/%Y %H:%M", "%m/%d/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S"):
+        dt = pd.to_datetime(s, errors="coerce", format=fmt)
+        candidates.append(dt)
+
+    # Pick the candidate with the fewest NaT
+    best = min(candidates, key=lambda x: x.isna().sum())
+    nat_count = int(best.isna().sum())
+
+    if nat_count == len(series):
+        # Nothing looked like a date at all → signal: try numeric
+        return None
+
+    if nat_count > 0:
+        # Partially parseable → raise with examples so data can be fixed upstream
+        bad = series[best.isna()].head(5)
+        raise ValueError(
+            "Datetime parsing succeeded for some rows but failed for others. "
+            "Fix or drop the unparseable values. Examples:\n"
+            f"{bad}"
+        )
+
+    # Full success → return int64 nanoseconds
+    return best.astype("int64")
+
+
+def _normalize_time_series(series: pd.Series) -> pd.Series:
+    """
+    Convert a time column to int64:
+      - Datetime-like or date-like strings → int64 nanoseconds
+      - Fully numeric → int64 (no scaling)
+    """
+    # Already datetime-like?
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series.astype("int64")
+
+    # Object/strings: try robust datetime parse
+    if series.dtype == "object" or pd.api.types.is_string_dtype(series):
+        parsed = _parse_datetime_to_ns(series)
+        if parsed is not None:
+            return parsed
+        # else: nothing looked like a date → treat as numeric below
+
+    # Numeric path (no scaling)
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.isna().any():
+        bad = series[numeric.isna()].head(5)
+        raise ValueError(
+            "Time column contains values that are neither parseable datetimes nor numeric. "
+            f"Examples:\n{bad}"
+        )
+    return np.rint(numeric.astype("float64")).astype("int64")
+
 
 def validate_input(df: Union[pd.DataFrame, dd.DataFrame]) -> None:
     """
@@ -115,45 +169,38 @@ def preprocess_dataframe(
     start_col: str = "StartDateTime",
     end_col: str = "EndDateTime",
     patient_col: str = "PatientID",
-    parse_dates: bool = True,
 ) -> Union[pd.DataFrame, dd.DataFrame]:
     """
-    Normalize dtypes, apply symbol mapping to create integer symbol column, parse times.
-    Returns DataFrame with columns: PatientID, symbol (int), StartDateTime (datetime), EndDateTime (datetime)
+    Normalize dtypes, map symbols to ints, and standardize times to int64.
+    - Datetime or date-like strings -> int64 nanoseconds.
+    - Numeric -> int64 (no scaling).
+    Returns columns: [patient_col, 'symbol', start_col, end_col, 'raw_symbol'].
     """
-    # Combine concept and value into raw symbol string
-    def _make_symbol(pdf):
-        pdf = pdf.copy()
-        pdf["raw_symbol"] = pdf[concept_col].astype(str) + ":" + pdf[value_col].astype(str)
-        pdf["symbol"] = pdf["raw_symbol"].map(symbol_map)
-        if parse_dates:
-            pdf[start_col] = _parse_datetime_series(pdf[start_col], dayfirst=True)
-            pdf[end_col] = _parse_datetime_series(pdf[end_col], dayfirst=True)
 
-            # Optional strictness: fail early if any parsing produced NaT
-            if pdf[start_col].isna().any() or pdf[end_col].isna().any():
-                bad = pdf[pdf[start_col].isna() | pdf[end_col].isna()]
-                raise ValueError(
-                    f"Date parsing produced NaT for some rows. Examples:\n{bad.head(5)}"
-                )
-        return pdf
+    def _transform(pdf: pd.DataFrame) -> pd.DataFrame:
+        pdf = pdf.copy()
+
+        # Build symbols
+        raw = pdf[concept_col].astype(str) + ":" + pdf[value_col].astype(str)
+        pdf["raw_symbol"] = raw
+        pdf["symbol"] = raw.map(symbol_map).astype("int64")
+
+        # Times -> int64
+        pdf[start_col] = _normalize_time_series(pdf[start_col])
+        pdf[end_col]   = _normalize_time_series(pdf[end_col])
+
+        # Sanity
+        if (pdf[end_col] < pdf[start_col]).any():
+            bad = pdf.loc[pdf[end_col] < pdf[start_col], [patient_col, start_col, end_col]].head(5)
+            raise ValueError(f"Found rows with End < Start. Examples:\n{bad}")
+
+        return pdf[[patient_col, "symbol", start_col, end_col, "raw_symbol"]]
 
     if isinstance(df, dd.DataFrame):
-        df = df.map_partitions(_make_symbol, meta={
-            patient_col: "int64",
-            concept_col: "object",
-            value_col: "object",
-            start_col: "datetime64[ns]",
-            end_col: "datetime64[ns]",
-            "raw_symbol": "object",
-            "symbol": "int64",
-        })
+        # Let Dask infer meta; start/end become int64.
+        return df.map_partitions(_transform, meta=None)
     else:
-        df = _make_symbol(df)
-
-    # Optional: cast symbol to int category for memory
-    df["symbol"] = df["symbol"].astype("int64")
-    return df
+        return _transform(df)
 
 
 def to_entity_list(

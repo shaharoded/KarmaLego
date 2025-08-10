@@ -1,6 +1,5 @@
 import logging
 from functools import wraps
-from copy import deepcopy
 from collections import defaultdict
 from tqdm import tqdm
 import pandas as pd
@@ -8,6 +7,7 @@ import time
 import json
 
 from core.utils import (
+    normalize_time_param,
     temporal_relations,
     lexicographic_sorting,
     check_symbols_lexicographically,
@@ -495,8 +495,8 @@ class KarmaLego:
         Minimum vertical support threshold for a pattern to be kept.
     """
     def __init__(self, epsilon, max_distance, min_ver_supp):
-        self.epsilon = epsilon
-        self.max_distance = max_distance
+        self.epsilon = normalize_time_param(epsilon)
+        self.max_distance = normalize_time_param(max_distance)
         self.min_ver_supp = min_ver_supp
 
     @log_execution

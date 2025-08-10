@@ -1,5 +1,27 @@
 from copy import deepcopy
+import pandas as pd
+import numpy as np
 from core.relation_table import compose_relation
+
+
+def normalize_time_param(x):
+    """
+    Normalize a duration parameter:
+      - int/float -> int (no scaling)
+      - pd.Timedelta -> ns (int)
+      - None -> None
+    No string support.
+    """
+    if x is None:
+        return None
+    if isinstance(x, pd.Timedelta):
+        return int(x.value)  # already ns
+    if isinstance(x, (int, np.integer)):
+        return int(x)
+    if isinstance(x, (float, np.floating)):
+        return int(np.rint(float(x)))
+    raise TypeError(f"Unsupported type for time param: {type(x)}. "
+                    "Pass numeric (same unit as your time columns) or pd.Timedelta.")
 
 
 def lexicographic_sorting(entity):
