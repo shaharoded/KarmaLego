@@ -66,8 +66,8 @@ Support checks for a child TIRP are restricted to the entities that supported it
 4. **CSAC (Consistent SAC, embedding-level):**
 Beyond entity filtering, we maintain the exact parent embeddings (index tuples) per entity and only accept child embeddings that extend those specific tuples.
 
- - Accuracy: identical to full search; CSAC is pruning, not approximation.
- - Speed: large savings in dense timelines; no wasted checks on impossible extensions.
+  - Accuracy: identical to full search; CSAC is pruning, not approximation.
+  - Speed: large savings in dense timelines; no wasted checks on impossible extensions.
 
 5. **Skip duplicate pair generation:**
 Pairs (k=2) are produced once in Karma and not re-generated in Lego. This eliminates ~×2 duplication for pairs and can reduce Lego runtime dramatically.
