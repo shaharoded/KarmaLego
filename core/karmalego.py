@@ -878,7 +878,11 @@ class Lego(KarmaLego):
             while queue:
                 current = queue.pop(0)
                 if isinstance(current.data, TIRP):
-                    extensions = list(set(self.all_extensions(entity_list, current.data, precomputed)))
+                    # Skip extending singletons: Karma already created all k=2 patterns.
+                    if current.data.k == 1:
+                        extensions = []
+                    else:
+                        extensions = list(set(self.all_extensions(entity_list, current.data, precomputed)))
                     ok = []
                     iterator = extensions
                     if self.show_detail:
