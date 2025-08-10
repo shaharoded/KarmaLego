@@ -207,7 +207,8 @@ You can pivot `patient_pattern_vectors.ALL.csv` to a wide feature matrix for mod
   Min–max normalize the `tirp-count` values across the cohort **per pattern** into **[0,1]**.
 
 - `tpf-duration`  
-  For each patient/pattern, sum the **union** of embedding spans (from start of the first interval to end of the last) so overlapping time is **not** double-counted; then min–max normalize across the cohort **per pattern** into **[0,1]**.
+  For each patient and pattern, take the **union of the pattern’s embedding windows**-each window is the full span from the **start of the first** interval in the embedding to the **end of the last**-so overlapping/touching windows are **merged** and **not** double-counted (gaps inside a window are included). The per-patient total is then **min–max normalized across patients (per pattern)** to **[0,1]**.  
+  *Example:* if `A<B` occurs with windows of 10h and 5h that **don’t overlap**, duration = `10 + 5 = 15`; if the second starts 2h before the first ends, duration = `10 + 5 − 2 = 13`.
 
 --- 
 
