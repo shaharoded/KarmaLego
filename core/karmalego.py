@@ -377,7 +377,7 @@ class TIRP:
 
         return ""
 
-    def is_above_vertical_support(self, entity_list):
+    def is_above_vertical_support(self, entity_list, precomputed=None):
         """
         Compute and update vertical support for this TIRP over the provided entity list.
         “Given the set of entities (patients), how many of them contain this pattern 
@@ -394,7 +394,10 @@ class TIRP:
         entity_list : list
             List of entities, where each entity is itself a list of tuples
             (start, end, symbol). Symbols must align with self.symbols when matching.
-
+        precomputed:
+            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
+            and 'symbol_index' (symbol -> positions within that entity).   
+            Allowes to avoid repeat sorting during Lego support checks. 
         Returns
         -------
         bool
@@ -415,6 +418,10 @@ class TIRP:
         for reduced_idx, entity in enumerate(entity_list_reduced):
             orig_idx = mapping_reduced_to_orig[reduced_idx]
             lexi_sorted = lexicographic_sorting(entity)
+            if precomputed is not None:
+                lexi_sorted = precomputed[orig_idx]["sorted"]
+            else:
+                lexi_sorted = lexicographic_sorting(entity)
             entity_ti = [(s, e) for s, e, _ in lexi_sorted]
             entity_symbols = [sym for _, _, sym in lexi_sorted]
 
@@ -545,7 +552,7 @@ class KarmaLego:
         # Lego extension
         t_lego_start = time.perf_counter()
         lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True)
-        full_tree = lego.run_lego(tree, entity_list)
+        full_tree = lego.run_lego(tree, entity_list, precomputed)
         t_lego_end = time.perf_counter()
 
         # Flatten and filter
@@ -805,7 +812,7 @@ class Lego(KarmaLego):
         super().__init__(epsilon, max_distance, min_ver_supp)
         self.show_detail = show_detail # whether to keep per-extension verbosity
 
-    def run_lego(self, node, entity_list):
+    def run_lego(self, node, entity_list, precomputed):
         """
         Extend base patterns recursively to higher-order TIRPs.
 
@@ -818,6 +825,9 @@ class Lego(KarmaLego):
             Root TreeNode to start extension from.
         entity_list :
             List of entities for support computation.
+        precomputed:   
+            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
+            and 'symbol_index' (symbol -> positions within that entity). 
 
         Returns
         -------
@@ -836,7 +846,7 @@ class Lego(KarmaLego):
                     if self.show_detail:
                         iterator = tqdm(extensions, desc=f"Extending TIRP k={current.data.k}", leave=False)
                     for ext in iterator:
-                        if ext.is_above_vertical_support(entity_list):
+                        if ext.is_above_vertical_support(entity_list, precomputed=precomputed):
                             ok.append(ext)
                     for ext in ok:
                         child = TreeNode(ext)
