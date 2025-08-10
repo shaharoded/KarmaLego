@@ -18,4 +18,4 @@ venv/
 
 # Output files
 discovered_patterns.csv
-patient_pattern_vectors.csv
+patient_pattern_vectors*

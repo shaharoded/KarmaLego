@@ -5,6 +5,7 @@ from tqdm import tqdm
 import pandas as pd
 import time
 import json
+from ast import literal_eval
 
 from core.utils import (
     normalize_time_param,
@@ -12,8 +13,7 @@ from core.utils import (
     lexicographic_sorting,
     check_symbols_lexicographically,
     find_all_possible_extensions,
-    decode_pattern,
-    count_embeddings_in_single_entity
+    decode_pattern
 )
 
 # logging decorator
@@ -647,59 +647,193 @@ class KarmaLego:
             return outputs[0]
         return outputs
 
+
     @log_execution
-    def apply_patterns_to_entities(self, entity_list, patterns, patient_ids, tpp=False):
+    def apply_patterns_to_entities(
+        self,
+        entity_list,
+        patterns,
+        patient_ids,
+        mode: str = "tirp-count",              # "tirp-count" | "tpf-dist" | "tpf-duration"
+        count_strategy: str = "unique_last",   # for horizontal support: "unique_last" or "all"
+    ):
         """
-        Given discovered patterns, build per-patient feature vectors (counts or normalized TPP).
+        Build per-patient features from discovered TIRPs.
 
         Parameters
         ----------
-        entity_list : list
-            List of entities, parallel to patient_ids.
-        patterns : list[TIRP] or pandas.Series/DataFrame column of TIRPs
+        entity_list : list[list[(start, end, symbol)]]
+            Entities aligned with patient_ids.
+        patterns : list[TIRP] or DataFrame with column 'tirp_obj'
             Patterns to apply.
         patient_ids : list
-            Identifiers matching order of entity_list.
-        tpp : bool
-            If True, normalize per-patient distribution.
+            Parallel to entity_list.
+        mode : {"tirp-count","tpf-dist","tpf-duration"}
+            - "tirp-count": horizontal support per patient. By default uses 'unique_last':
+            counts one occurrence per DISTINCT last-symbol index among valid embeddings.
+            Example: for A…B…A…B…C, pattern A<B<C counts as 1 (not 3).
+            Use count_strategy="all" to count every embedding if desired.
+            - "tpf-dist": min-max normalize the horizontal support across patients (per pattern) to [0,1].
+            - "tpf-duration": for each patient, sum the UNION of embedding spans
+            (start(first symbol) to end(last symbol)), then min–max normalize across patients (per pattern).
+        count_strategy : {"unique_last","all"}
+            Strategy for horizontal support counting (see above).
 
         Returns
         -------
         dict
-            patient_id -> {pattern_repr: count or normalized value}
-        
-        NOTE: You can pass this function a pre-calculated list of TIRPs like:
-        patterns_df = karma_lego.discover_patterns(...)
-        tirps = patterns_df['tirp_obj'].tolist()
-        result = karma_lego.apply_patterns_to_entities(entity_list, tirps, patient_ids)
+            patient_id -> {pattern_repr: value}
         """
-        patient_pattern_counts = {pid: defaultdict(int) for pid in patient_ids}
-
-        # Ensure we have TIRP objects if a DataFrame column passed
-        patterns_list = []
+        # ---- Normalize patterns container ----
         if hasattr(patterns, "itertuples") or isinstance(patterns, pd.DataFrame):
-            # assume column 'tirp_obj' exists
-            patterns_list = list(patterns["tirp_obj"])
+            cols = set(patterns.columns)
+            if "tirp_obj" in cols:
+                patterns_list = list(patterns["tirp_obj"])
+            elif {"symbols", "relations"}.issubset(cols):
+                # Reconstruct TIRPs from CSV-friendly columns
+                patterns_list = []
+                for row in patterns.itertuples(index=False):
+                    syms = row.symbols
+                    rels = row.relations
+                    if isinstance(syms, str):
+                        syms = literal_eval(syms)  # e.g., "(1, 3, 2)" -> (1,3,2)
+                    if isinstance(rels, str):
+                        rels = literal_eval(rels)  # e.g., "('<','<')" -> ('<','<')
+                    patterns_list.append(
+                        TIRP(
+                            epsilon=self.epsilon,
+                            max_distance=self.max_distance,
+                            min_ver_supp=self.min_ver_supp,
+                            symbols=list(syms),
+                            relations=list(rels),
+                            k=len(syms),
+                        )
+                    )
+            else:
+                raise ValueError("DataFrame must contain either 'tirp_obj' or both 'symbols' and 'relations'.")
         elif isinstance(patterns, (list, tuple)):
-            patterns_list = patterns
+            patterns_list = list(patterns)
         else:
             raise ValueError("Unsupported patterns container")
 
+        # ---- Precompute per-entity views (sorted intervals + symbol list) ----
+        # Reuse your lexicographic policy for consistent indexing
+        precomp = []
+        for ent in entity_list:
+            lexi = lexicographic_sorting(ent)
+            ti = [(s, e) for s, e, _ in lexi]        # list of (start, end) pairs
+            syms = [sym for _, _, sym in lexi]       # parallel list of symbols
+            precomp.append((ti, syms))
+
+        # ---- Helpers ----
+        def _valid_embeddings_in_entity(tirp, ti, syms):
+            """Return list of index-tuples (embedding positions) that satisfy tirp.symbols & all relations."""
+            if len(tirp.symbols) > len(syms):
+                return []
+            idx_tuples = check_symbols_lexicographically(syms, tirp.symbols)
+            if not idx_tuples:
+                return []
+            out = []
+            for tup in idx_tuples:
+                ok = True
+                rel_idx = 0
+                # verify all pairwise relations in upper triangular order
+                for col, ent_idx in enumerate(tup[1:]):
+                    for row in range(col + 1):
+                        i1 = tup[row]
+                        i2 = ent_idx
+                        expected = tirp.relations[rel_idx]
+                        actual = temporal_relations(ti[i1], ti[i2], self.epsilon, self.max_distance)
+                        if expected != actual:
+                            ok = False
+                            break
+                        rel_idx += 1
+                    if not ok:
+                        break
+                if ok:
+                    out.append(tup)
+            return out
+
+        def _horizontal_support_from_embeddings(embeddings):
+            """Count embeddings per strategy."""
+            if not embeddings:
+                return 0
+            if count_strategy == "all":
+                return len(embeddings)
+            elif count_strategy == "unique_last":
+                # Count one per distinct last index → collapses A…B…A…B…C to 1 for A<B<C
+                return len({t[-1] for t in embeddings})
+            else:
+                raise ValueError("count_strategy must be 'unique_last' or 'all'.")
+
+        def _union_span_from_embeddings(embeddings, ti):
+            """Compute total union duration over [start(first), end(last)] for each embedding."""
+            if not embeddings:
+                return 0
+            # Build span intervals for each embedding
+            ivs = []
+            for tup in embeddings:
+                start_first = ti[tup[0]][0]
+                end_last = ti[tup[-1]][1]
+                ivs.append((start_first, end_last))
+            # Merge overlapping intervals (classic sweep)
+            ivs.sort(key=lambda x: (x[0], x[1]))
+            merged = []
+            for s, e in ivs:
+                if not merged or s > merged[-1][1]:
+                    merged.append([s, e])
+                else:
+                    if e > merged[-1][1]:
+                        merged[-1][1] = e
+            total = 0
+            for s, e in merged:
+                total += (e - s)
+            return int(total)
+
+        # ---- Pass 1: compute raw values per patient & pattern ----
+        values = {pid: defaultdict(float) for pid in patient_ids}
         for tirp in tqdm(patterns_list, desc="Applying patterns to entities"):
             key = repr(tirp)
-            for idx, entity in enumerate(entity_list):
-                count = count_embeddings_in_single_entity(tirp, entity)
-                if count > 0:
-                    patient_pattern_counts[patient_ids[idx]][key] = count
+            for eid, (ti, syms) in enumerate(precomp):
+                emb = _valid_embeddings_in_entity(tirp, ti, syms)
+                if not emb:
+                    continue
+                pid = patient_ids[eid]
+                if mode == "tirp-count" or mode == "tpf-dist":
+                    values[pid][key] = _horizontal_support_from_embeddings(emb)
+                elif mode == "tpf-duration":
+                    values[pid][key] = _union_span_from_embeddings(emb, ti)
+                else:
+                    raise ValueError("mode must be one of: 'tirp-count', 'tpf-dist', 'tpf-duration'.")
 
-        if tpp:
-            for pid, counts in patient_pattern_counts.items():
-                total = sum(counts.values())
-                if total > 0:
-                    for k in list(counts.keys()):
-                        counts[k] = counts[k] / total
+        # ---- Pass 2: normalization for cohort-based modes ----
+        if mode in ("tpf-dist", "tpf-duration"):
+            # Collect pattern keys
+            pattern_keys = set()
+            for v in values.values():
+                pattern_keys.update(v.keys())
 
-        return patient_pattern_counts
+            # For each pattern, compute cohort min/max, including zeros for patients without the pattern
+            mins, maxs = {}, {}
+            for pat in pattern_keys:
+                series = []
+                for pid in patient_ids:
+                    series.append(values[pid].get(pat, 0.0))
+                mins[pat] = min(series)
+                maxs[pat] = max(series)
+
+            # Min–max normalize per pattern to [0,1]
+            for pid in patient_ids:
+                if not values[pid]:
+                    continue
+                for pat in list(values[pid].keys()):
+                    lo, hi = mins[pat], maxs[pat]
+                    if hi > lo:
+                        values[pid][pat] = (values[pid][pat] - lo) / (hi - lo)
+                    else:
+                        values[pid][pat] = 0.0
+
+        return values
     
 
 class Karma(KarmaLego):
