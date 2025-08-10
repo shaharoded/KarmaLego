@@ -28,6 +28,8 @@ Each cell in the matrix shows the temporal relation between intervals (e.g., `A�
 
 Patterns are built incrementally by traversing a **tree of symbol and relation extensions**, starting from frequent 1-intervals (K=1) and growing to longer TIRPs (K=2,3,...). Only frequent patterns are expanded (Apriori pruning), and relation consistency is ensured using transitivity rules.
 
+Practical flow in this implementation. The pipeline enumerates singletons and all frequent pairs (k=2) in the Karma stage. The Lego stage then skips extending singletons and starts from k≥2, extending patterns to length k+1. This avoids regenerating pairs (and their support checks) a second time. I also apply CSAC (see below), which anchors each extension on the actual parent embeddings inside each entity, ensuring only consistent child embeddings are considered.
+
 <p align="center">
   <img src="images/karmalego_tree.png" alt="KarmaLego Pattern Extension Tree" width="80%" height="80%">
 </p>
@@ -49,20 +51,32 @@ The design goals are: **clarity, performance, testability, and reproducibility**
 
 ---
 
-## KarmaLego Performance Optimizations
+## KarmaLego Performance Optimizations (SAC + CSAC)
 This implementation incorporates several core performance techniques from the KarmaLego framework:
 
 1. **Apriori pruning:**
-The algorithm only extends a pattern (e.g., from length k=2 to k=3) if the shorter base pattern is frequent. This avoids exploring any pattern whose sub-patterns fail the minimum support threshold.
+Patterns are extended only if all their (k−1)-subpatterns are frequent, cutting unpromising branches early.
 
-2. **Temporal relation transitivity:**
-During pattern extension (Lego phase), the code uses Allen relation composition to infer allowable temporal relations without explicitly scanning all combinations. This leverages a transition table (compose_relation) to reduce redundant comparisons.
+2. **Temporal relation transitivity (+ memoization):**
+Allen relation composition reduces relation search at extension time; the `compose_relation()` function is memoized to eliminate repeated small-table lookups.
 
-3. **Subset of Active Candidates (SAC):**
-When checking support for a candidate pattern, the algorithm restricts its scan to only those patients that supported its parent pattern. This drastically reduces horizontal support checks at deeper levels of the pattern tree.
+3. **SAC (Subset of Active Candidates):**
+Support checks for a child TIRP are restricted to the entities that supported its parent, avoiding scans of unrelated entities at deeper levels.
 
-4. **Memoization of relation composition:**
-The core `compose_relation()` function is memoized using `@lru_cache`, avoiding redundant transitivity calculations across TIRPs. Since the input space is small (7x7 Allen relations), caching provides a measurable speedup in the Lego phase.
+4. **CSAC (Consistent SAC, embedding-level):**
+Beyond entity filtering, we maintain the exact parent embeddings (index tuples) per entity and only accept child embeddings that extend those specific tuples.
+
+ - Accuracy: identical to full search; CSAC is pruning, not approximation.
+ - Speed: large savings in dense timelines; no wasted checks on impossible extensions.
+
+5. **Skip duplicate pair generation:**
+Pairs (k=2) are produced once in Karma and not re-generated in Lego. This eliminates ~×2 duplication for pairs and can reduce Lego runtime dramatically.
+
+6. **Precomputed per-entity views (reused everywhere):**
+Lexicographic sorting and symbol→positions maps are built once and reused in support checks and extension, avoiding repeat work.
+
+7. **Integer time arithmetic:**
+Timestamps are held as `int64`; relation checks use pure integer math. If source data were datetimes, they are converted to ns; if they were numeric, they remain your unit.
 
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
 
@@ -75,6 +89,8 @@ These optimizations ensure that KarmaLego runs efficiently on large temporal dat
   - Splitting the dataset into concept clusters or patient cohorts and running in parallel across jobs.
   - Using `min_ver_supp` and `max_k` to control pattern explosion.
   - Persisting symbol maps to ensure consistent encoding across runs.
+- No k=1→k=2 in Lego: pairs are already created in Karma; Lego starts from k≥2. This removes structural duplicates and their support checks.
+- CSAC memory hygiene: parent embedding state is released after each support check; leaf nodes release their own embedding maps, keeping peak RAM lower on large runs.
 
 ---
 
@@ -175,10 +191,20 @@ You can pivot `patient_pattern_vectors.csv` to a wide feature matrix for modelin
 
 ## Key Concepts / Parameters
 
-- `epsilon` : temporal tolerance for considering endpoints equal or meeting. Same unit as timestamps (use `pd.Timedelta` when using datetimes).
-- `max_distance` : maximum gap between intervals to still consider them related (e.g., 1 hour → `pd.Timedelta(hours=1)`).
+- `epsilon` : temporal tolerance for equality/meet decisions (same unit as your preprocessed timestamps). If source columns were datetimes, they are converted to ns, so you may pass a numeric ns value or a `pd.Timedelta`.
+- `max_distance` : maximum gap between intervals to still consider them related (e.g., 1 hour → `pd.Timedelta(hours=1)`), same unit rule as above.
 - `min_ver_supp` : minimum vertical support threshold (fraction of patients that must exhibit a pattern for it to be retained).
 - `TPP` : normalized per-patient pattern distribution (pattern counts divided by total patterns for that patient).
+
+--- 
+
+## Support Semantics (Horizontal vs Vertical)
+- **Horizontal support (per entity):** number of embeddings (index-tuples) of the TIRP found in a given entity. We count all valid embeddings (not just non-overlapping), matching the standard KarmaLego literature.
+Example: In `A…B…A…B…C`, the pattern `A…B…C` has 3 embeddings: `(A₀,B₁,C₄)`, `(A₀,B₃,C₄)`, `(A₂,B₃,C₄)`.
+
+- **Vertical support (dataset level):** fraction of entities that have at least one embedding of the TIRP.
+
+If you prefer “non-overlapping” or “one-per-window” counts for downstream modeling, compute that in the apply phase without changing discovery (a toggle can be added there).
 
 ---
 
@@ -252,6 +278,7 @@ wide = df_vec.pivot(index="PatientID", columns="Pattern", values="Value").fillna
 - Persist precomputed symbol maps to keep encoding stable across runs.
 - Use categorical dtype for symbol column after mapping to reduce memory pressure.
 - Tune `min_ver_supp` to control pattern explosion vs sensitivity.
+- If memory is tight on extremely dense data, consider limiting `max_k` or post-processing horizontal support to non-overlapping counts; CSAC itself preserves correctness but can retain many embeddings per entity for highly frequent TIRPs.
 
 ---
 
@@ -262,3 +289,7 @@ wide = df_vec.pivot(index="PatientID", columns="Pattern", values="Value").fillna
 - The pattern tree is built lazily/iteratively; flat exports are used downstream for speed.  
 - Equality and hashing ensure duplicate candidate patterns merge correctly.  
 - Tests provide deterministic synthetic scenarios for regression.
+- SAC/CSAC implementation notes: 
+  - We store embeddings_map on each TIRP (per-entity lists of index tuples) and pass it to children as parent_embeddings_map so LEGO only considers child embeddings that extend actual parent tuples (CSAC).
+  - After support filtering, we free parent_embeddings_map. If a node has no valid extensions, we also free its own embeddings_map.
+  - LEGO does not extend singletons; pairs are produced in Karma once and re-used, eliminating duplicate pair discovery.
