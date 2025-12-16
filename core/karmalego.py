@@ -384,10 +384,11 @@ class TIRP:
                 print('-' * (sum(len(s) for s in self.symbols[1:]) + longest_symbol_name_len + 3 * len(self.symbols)))
 
         return ""
-
+    
     def is_above_vertical_support(self, entity_list, precomputed=None):
         """
         Compute and update vertical support for this TIRP over the provided entity list.
+        Optimized to use parent embeddings for guided search (Forward Pruning).
         “Given the set of entities (patients), how many of them contain this pattern 
         (with the right symbol order and temporal relations)?”
 
@@ -410,105 +411,127 @@ class TIRP:
         -------
         bool
             True if computed vertical support >= self.min_ver_supp, False otherwise.
+        
         """
-        # Apply parent-level filtering if available, with mapping to original indices.
-        if self.parent_entity_indices_supporting is not None:
-            reduced_indices = list(self.parent_entity_indices_supporting)
-            entity_list_reduced = [entity_list[i] for i in reduced_indices]
-            mapping_reduced_to_orig = {ri: reduced_indices[ri] for ri in range(len(reduced_indices))}
-        else:
-            entity_list_reduced = entity_list
-            mapping_reduced_to_orig = {i: i for i in range(len(entity_list))}
-
         supporting_reduced = set()
         last_symbol_map = {}  # original_idx -> set of last symbol positions
+        
+        # Determine which entities to check
+        indices_to_check = self.parent_entity_indices_supporting if self.parent_entity_indices_supporting is not None else range(len(entity_list))
 
-        for reduced_idx, entity in enumerate(entity_list_reduced):
-            orig_idx = mapping_reduced_to_orig[reduced_idx]
-            lexi_sorted = lexicographic_sorting(entity)
+        # Check if we can use the optimized guided extension
+        use_guided_extension = getattr(self, "parent_embeddings_map", None) is not None
+
+        for orig_idx in indices_to_check:
+            # Get the entity data
             if precomputed is not None:
                 lexi_sorted = precomputed[orig_idx]["sorted"]
             else:
-                lexi_sorted = lexicographic_sorting(entity)
+                lexi_sorted = lexicographic_sorting(entity_list[orig_idx])
+            
             entity_ti = [(s, e) for s, e, _ in lexi_sorted]
             entity_symbols = [sym for _, _, sym in lexi_sorted]
-
-            if len(self.symbols) > len(entity_symbols):
-                continue  # cannot embed if pattern longer than entity
-
-            matching_options = check_symbols_lexicographically(entity_symbols, self.symbols)
-            if matching_options is None:
-                continue
-
+            
             valid_embeddings_here = []
-            for matching_option in matching_options:
-                all_relations_match = True
-                relation_index = 0
 
-                for column_count, entity_index in enumerate(matching_option[1:]):
-                    for row_count in range(column_count + 1):
-                        ti_1 = entity_ti[matching_option[row_count]]
-                        ti_2 = entity_ti[entity_index]
-                        expected_rel = self.relations[relation_index]
-                        actual_rel = temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance)
-                        if expected_rel != actual_rel:
-                            all_relations_match = False
+            if use_guided_extension:
+                # --- OPTIMIZED PATH: Extend parent embeddings ---
+                target_symbol = self.symbols[-1]
+                parent_embeddings = self.parent_embeddings_map.get(orig_idx, [])
+                
+                for parent_tup in parent_embeddings:
+                    parent_last_idx = parent_tup[-1]
+                    # Find instances of target_symbol after the parent's last symbol
+                    for i in range(parent_last_idx + 1, len(entity_symbols)):
+                        if entity_symbols[i] == target_symbol:
+                            # Verify relations between new symbol and existing symbols
+                            all_relations_match = True
+                            rels_to_check = self.relations[-(self.k - 1):]
+                            
+                            for prev_idx_in_pattern, prev_entity_idx in enumerate(parent_tup):
+                                expected_rel = rels_to_check[prev_idx_in_pattern]
+                                ti_1 = entity_ti[prev_entity_idx]
+                                ti_2 = entity_ti[i]
+                                actual_rel = temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance)
+                                if expected_rel != actual_rel:
+                                    all_relations_match = False
+                                    break
+                            
+                            if all_relations_match:
+                                valid_embeddings_here.append(parent_tup + (i,))
+            
+            else:
+                # --- FULL SEARCH PATH: Generate from scratch ---
+                # Necessary for k=1 or when parent embeddings are missing (e.g. tests)
+                if len(self.symbols) > len(entity_symbols):
+                    continue
+
+                matching_options = check_symbols_lexicographically(entity_symbols, self.symbols)
+                if not matching_options:
+                    continue
+
+                for matching_option in matching_options:
+                    all_relations_match = True
+                    relation_index = 0
+                    # Verify all pairwise relations
+                    for column_count, entity_index in enumerate(matching_option[1:]):
+                        for row_count in range(column_count + 1):
+                            ti_1 = entity_ti[matching_option[row_count]]
+                            ti_2 = entity_ti[entity_index]
+                            expected_rel = self.relations[relation_index]
+                            actual_rel = temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance)
+                            if expected_rel != actual_rel:
+                                all_relations_match = False
+                                break
+                            relation_index += 1
+                        if not all_relations_match:
                             break
-                        relation_index += 1
-                    if not all_relations_match:
-                        break
+                    
+                    if all_relations_match:
+                        valid_embeddings_here.append(matching_option)
 
-                if all_relations_match:
-                    valid_embeddings_here.append(matching_option)
-
-            # CSAC: if parent embeddings exist for this entity, keep only tuples that extend a parent tuple
+            # --- Common Storage Logic ---
             if valid_embeddings_here:
-                if getattr(self, "parent_embeddings_map", None) and orig_idx in self.parent_embeddings_map:
-                    parent_tuples = set(self.parent_embeddings_map[orig_idx])
-                    p_len = len(next(iter(parent_tuples))) if parent_tuples else 0
-                    valid_embeddings_here = [t for t in valid_embeddings_here if tuple(t[:p_len]) in parent_tuples]
+                supporting_reduced.add(orig_idx)
+                
+                # Record last indices
+                for tup in valid_embeddings_here:
+                    last_symbol = tup[-1]
+                    last_symbol_map.setdefault(orig_idx, set()).add(last_symbol)
+                
+                # Store embeddings
+                if self.embeddings_map is None:
+                    self.embeddings_map = {}
+                
+                # Deduplicate and store
+                seen = set(tuple(t) for t in valid_embeddings_here)
+                self.embeddings_map[orig_idx] = sorted(seen)
 
-                if valid_embeddings_here:
-                    supporting_reduced.add(reduced_idx)
-                    # record all last indices for extension anchoring
-                    for tup in valid_embeddings_here:
-                        last_symbol = tup[-1]
-                        last_symbol_map.setdefault(orig_idx, set()).add(last_symbol)
-                    # store embeddings
-                    if self.embeddings_map is None:
-                        self.embeddings_map = {}
-                    # de-dupe tuples per entity
-                    seen = set(tuple(t) for t in valid_embeddings_here)
-                    self.embeddings_map.setdefault(orig_idx, []).extend(sorted(seen))
+        # --- Finalize Support ---
+        self.entity_indices_supporting = list(supporting_reduced)
 
-        # Translate reduced support indices back to original entity indices
-        new_supporting = set()
-        for reduced_idx in supporting_reduced:
-            orig = mapping_reduced_to_orig[reduced_idx]
-            new_supporting.add(orig)
-        self.entity_indices_supporting = list(new_supporting)
-
-        # Align last-symbol positions with supporting entity indices
+        # Align last-symbol positions
         paired = set()
         for orig_idx in self.entity_indices_supporting:
             last_symbols = last_symbol_map.get(orig_idx, [])
             for sym_idx in last_symbols:
                 paired.add((sym_idx, orig_idx))
+        
         if paired:
             sym_idxs, ent_idxs = zip(*paired)
             self.indices_of_last_symbol_in_entities = list(sym_idxs)
             self.entity_indices_supporting = list(ent_idxs)
         else:
             self.indices_of_last_symbol_in_entities = []
+            self.entity_indices_supporting = []
 
-        # Final vertical support is with respect to the full original entity list.
-        self.vertical_support = len(set(self.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
+        self.vertical_support = len(supporting_reduced) / len(entity_list) if entity_list else 0.0
         
-        # CSAC memory hygiene: we no longer need the parent's embeddings after filtering.
+        # Cleanup
         self.parent_embeddings_map = None
         
         return self.vertical_support >= self.min_ver_supp
-
+    
 
 class KarmaLego:
     """
