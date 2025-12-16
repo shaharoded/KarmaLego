@@ -553,7 +553,7 @@ class KarmaLego:
 
     @log_execution
     def discover_patterns(
-        self, entity_list, min_length=1, return_tree=False, return_tirps=False, inverse_mapping_path="data/inverse_symbol_map.json"
+        self, entity_list, min_length=1, max_length=None, return_tree=False, return_tirps=False, inverse_mapping_path="data/inverse_symbol_map.json"
     ):
         """
         Discover all frequent TIRPs from entity_list and return a flat DataFrame summary (default).
@@ -564,6 +564,8 @@ class KarmaLego:
             List of entities. Each entity is a list of (start, end, symbol) tuples.
         min_length : int
             Minimum pattern length (k) to include.
+        max_length : int, optional
+            Maximum pattern length (k) to include. If None, no limit.
         return_tree : bool
             If True, also return the internal pattern tree used for extension.
         return_tirps : bool
@@ -604,13 +606,15 @@ class KarmaLego:
         # Lego extension
         t_lego_start = time.perf_counter()
         lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True)
-        full_tree = lego.run_lego(tree, entity_list, precomputed)
+        full_tree = lego.run_lego(tree, entity_list, precomputed, max_length=max_length)
         t_lego_end = time.perf_counter()
 
         # Flatten and filter
         t_flatten_start = time.perf_counter()
         all_tirps = full_tree.find_tree_nodes()
         filtered = [t for t in all_tirps if t.k >= min_length]
+        if max_length is not None:
+            filtered = [t for t in filtered if t.k <= max_length]
 
         # Support set comparison for closed/super flags
         support_sets = [set(t.entity_indices_supporting) for t in filtered]
@@ -1016,7 +1020,7 @@ class Lego(KarmaLego):
         super().__init__(epsilon, max_distance, min_ver_supp)
         self.show_detail = show_detail # whether to keep per-extension verbosity
 
-    def run_lego(self, node, entity_list, precomputed):
+    def run_lego(self, node, entity_list, precomputed, max_length):
         """
         Extend base patterns recursively to higher-order TIRPs.
 
@@ -1032,6 +1036,8 @@ class Lego(KarmaLego):
         precomputed:   
             List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
             and 'symbol_index' (symbol -> positions within that entity). 
+        max_length : int, optional (assigned int or None by KarmaLego.discover_patterns)
+            Maximum pattern length (k) to extend to. If None, no limit.
 
         Returns
         -------
@@ -1044,6 +1050,9 @@ class Lego(KarmaLego):
             while queue:
                 current = queue.pop(0)
                 if isinstance(current.data, TIRP):
+                    # Stop extending if we reached max_length
+                    if max_length is not None and current.data.k >= max_length:
+                        continue
                     # Skip extending singletons: Karma already created all k=2 patterns.
                     if current.data.k == 1:
                         extensions = []

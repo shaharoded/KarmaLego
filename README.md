@@ -6,7 +6,7 @@ Based on the paper:
 *Moskovitch, Robert, and Yuval Shahar. "Temporal Patterns Discovery from Multivariate Time Series via Temporal Abstraction and Time-Interval Mining."*  
 (See [original](https://pmc.ncbi.nlm.nih.gov/articles/PMC2815492/) for theoretical grounding.)
 
-This implementation is designed to be used as an temporal analysis tool in my thesis.
+This implementation is designed to be used as an temporal analysis and feature extraction tool in my thesis.
 
 ## How KarmaLego Works
 
@@ -235,7 +235,7 @@ kl = KarmaLego(epsilon=pd.Timedelta(minutes=1),
                max_distance=pd.Timedelta(hours=1),
                min_ver_supp=0.03)
 
-df_patterns = kl.discover_patterns(entity_list, min_length=1)  # returns DataFrame
+df_patterns = kl.discover_patterns(entity_list, min_length=1, max_length=None)  # returns DataFrame
 ```
 
 ### Apply to Patients
