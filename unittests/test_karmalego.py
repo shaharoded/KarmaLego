@@ -176,3 +176,84 @@ def test_count_strategy_unique_last_vs_all_for_ABC_case():
 
     assert v_ul["p1"][repr(target)] == 1
     assert v_all["p1"][repr(target)] == 3
+
+
+@pytest.fixture
+def simple_chain_entities():
+    """
+    Three patients with a clear chain A -> B -> C.
+    This guarantees patterns of length 1 (A, B, C), 2 (A-B, B-C, A-C), and 3 (A-B-C).
+    """
+    # Patient 1: A(0,1), B(2,3), C(4,5)
+    p1 = [(0, 1, "A"), (2, 3, "B"), (4, 5, "C")]
+    # Patient 2: A(0,1), B(2,3), C(4,5)
+    p2 = [(0, 1, "A"), (2, 3, "B"), (4, 5, "C")]
+    # Patient 3: A(0,1), B(2,3), C(4, 5)
+    p3 = [(0, 1, "A"), (2, 3, "B"), (4, 5, "C")]
+    
+    entities = [p1, p2, p3]
+    return entities
+
+def test_min_length_constraint(simple_chain_entities):
+    """Test that min_length filters out short patterns."""
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1.0)
+    
+    # min_length=2 should exclude singletons (k=1)
+    df, tirps = kl.discover_patterns(simple_chain_entities, min_length=2, return_tirps=True)
+    
+    ks = [t.k for t in tirps]
+    assert all(k >= 2 for k in ks), f"Found patterns with k < 2: {ks}"
+    assert 2 in ks, "Should find length 2 patterns"
+    assert 3 in ks, "Should find length 3 patterns"
+
+def test_max_length_constraint(simple_chain_entities):
+    """Test that max_length stops extension and filters results."""
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1.0)
+    
+    # max_length=2 should exclude A-B-C (k=3)
+    df, tirps = kl.discover_patterns(simple_chain_entities, min_length=1, max_length=2, return_tirps=True)
+    
+    ks = [t.k for t in tirps]
+    assert all(k <= 2 for k in ks), f"Found patterns with k > 2: {ks}"
+    assert 1 in ks, "Should find length 1 patterns"
+    assert 2 in ks, "Should find length 2 patterns"
+    assert 3 not in ks, "Should NOT find length 3 patterns"
+
+def test_min_and_max_length_together(simple_chain_entities):
+    """Test both constraints simultaneously."""
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1.0)
+    
+    # min=2, max=2 -> Only length 2 patterns
+    df, tirps = kl.discover_patterns(simple_chain_entities, min_length=2, max_length=2, return_tirps=True)
+    
+    ks = [t.k for t in tirps]
+    assert all(k == 2 for k in ks), f"Found patterns with k != 2: {ks}"
+    assert len(ks) > 0, "Should find some patterns"
+
+def test_max_length_pruning_efficiency(simple_chain_entities):
+    """
+    Verify that max_length actually prevents deeper search (pruning),
+    not just filtering the output.
+    We check this by inspecting the returned tree depth if possible, 
+    or relying on the fact that k=3 patterns are not generated.
+    """
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1.0)
+    
+    # If we limit to k=1, the Lego phase shouldn't even generate k=2 candidates
+    # (Note: Karma phase generates k=2 by default, but Lego shouldn't extend them if max_length=2)
+    # Actually, Karma generates k=2. Lego extends from there.
+    # If max_length=1, we filter at the end.
+    # If max_length=2, Lego shouldn't extend k=2 nodes to k=3.
+    
+    tree = kl.discover_patterns(simple_chain_entities, min_length=1, max_length=2, return_tree=True)[1]
+    
+    # Traverse tree to find max depth
+    max_depth = 0
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        # Root node usually has string data or None; skip checking 'k' on it
+        if node.data and not isinstance(node.data, str):
+            max_depth = max(max_depth, node.data.k)
+        stack.extend(node.children)
+    assert max_depth <= 2, f"Tree contains nodes deeper than max_length=2 (found k={max_depth})"
