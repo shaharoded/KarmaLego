@@ -46,52 +46,52 @@ if __name__ == "__main__":
         patterns_df = kl.discover_patterns(entity_list, min_length=1)
         patterns_df.to_csv(patterns_path, index=False)
 
-    # Reconstruct TIRPs from CSV (fast) so keys/repr are consistent
-    sym_series = patterns_df["symbols"].apply(lambda x: x if not isinstance(x, str) else literal_eval(x))
-    rel_series = patterns_df["relations"].apply(lambda x: x if not isinstance(x, str) else literal_eval(x))
-    patterns_tirps = [
-        TIRP(
-            epsilon=kl.epsilon,
-            max_distance=kl.max_distance,
-            min_ver_supp=kl.min_ver_supp,
-            symbols=list(syms),
-            relations=list(rels),
-            k=len(syms),
-        )
-        for syms, rels in zip(sym_series, rel_series)
-    ]
+    # # Reconstruct TIRPs from CSV (fast) so keys/repr are consistent
+    # sym_series = patterns_df["symbols"].apply(lambda x: x if not isinstance(x, str) else literal_eval(x))
+    # rel_series = patterns_df["relations"].apply(lambda x: x if not isinstance(x, str) else literal_eval(x))
+    # patterns_tirps = [
+    #     TIRP(
+    #         epsilon=kl.epsilon,
+    #         max_distance=kl.max_distance,
+    #         min_ver_supp=kl.min_ver_supp,
+    #         symbols=list(syms),
+    #         relations=list(rels),
+    #         k=len(syms),
+    #     )
+    #     for syms, rels in zip(sym_series, rel_series)
+    # ]
 
-    # Pretty label map (repr(TIRP) -> human string from CSV)
-    rep_to_str = {repr(t): s for t, s in zip(patterns_tirps, patterns_df["tirp_str"])}
+    # # Pretty label map (repr(TIRP) -> human string from CSV)
+    # rep_to_str = {repr(t): s for t, s in zip(patterns_tirps, patterns_df["tirp_str"])}
 
-    # Keep a stable order
-    pattern_keys = [repr(t) for t in patterns_tirps]
+    # # Keep a stable order
+    # pattern_keys = [repr(t) for t in patterns_tirps]
 
-    # 8. Apply – compute 5 columns
-    vec_count_ul = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
-                                                mode="tirp-count", count_strategy="unique_last")
-    vec_count_all = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
-                                                mode="tirp-count", count_strategy="all")
-    vec_tpf_dist_ul = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
-                                                    mode="tpf-dist", count_strategy="unique_last")
-    vec_tpf_dist_all = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
-                                                    mode="tpf-dist", count_strategy="all")
-    vec_tpf_duration = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
-                                                    mode="tpf-duration", count_strategy="unique_last")
+    # # 8. Apply – compute 5 columns
+    # vec_count_ul = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
+    #                                             mode="tirp-count", count_strategy="unique_last")
+    # vec_count_all = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
+    #                                             mode="tirp-count", count_strategy="all")
+    # vec_tpf_dist_ul = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
+    #                                                 mode="tpf-dist", count_strategy="unique_last")
+    # vec_tpf_dist_all = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
+    #                                                 mode="tpf-dist", count_strategy="all")
+    # vec_tpf_duration = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
+    #                                                 mode="tpf-duration", count_strategy="unique_last")
 
-    # 9. One combined CSV
-    rows = []
-    for pid in patient_ids:
-        for rep in pattern_keys:
-            rows.append({
-                "PatientID": pid,
-                "Pattern": rep_to_str.get(rep, rep),
-                "tirp_count_unique_last": vec_count_ul.get(pid, {}).get(rep, 0.0),
-                "tirp_count_all":         vec_count_all.get(pid, {}).get(rep, 0.0),
-                "tpf_dist_unique_last":   vec_tpf_dist_ul.get(pid, {}).get(rep, 0.0),
-                "tpf_dist_all":           vec_tpf_dist_all.get(pid, {}).get(rep, 0.0),
-                "tpf_duration":           vec_tpf_duration.get(pid, {}).get(rep, 0.0),
-            })
+    # # 9. One combined CSV
+    # rows = []
+    # for pid in patient_ids:
+    #     for rep in pattern_keys:
+    #         rows.append({
+    #             "PatientID": pid,
+    #             "Pattern": rep_to_str.get(rep, rep),
+    #             "tirp_count_unique_last": vec_count_ul.get(pid, {}).get(rep, 0.0),
+    #             "tirp_count_all":         vec_count_all.get(pid, {}).get(rep, 0.0),
+    #             "tpf_dist_unique_last":   vec_tpf_dist_ul.get(pid, {}).get(rep, 0.0),
+    #             "tpf_dist_all":           vec_tpf_dist_all.get(pid, {}).get(rep, 0.0),
+    #             "tpf_duration":           vec_tpf_duration.get(pid, {}).get(rep, 0.0),
+    #         })
 
-    out_df = pd.DataFrame(rows)
-    out_df.to_csv("data/patient_pattern_vectors.ALL.csv", index=False)
+    # out_df = pd.DataFrame(rows)
+    # out_df.to_csv("data/patient_pattern_vectors.ALL.csv", index=False)

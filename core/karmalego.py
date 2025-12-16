@@ -927,22 +927,27 @@ class Karma(KarmaLego):
                             karma_bar.update(1)
                             continue
 
-                        tirp = TIRP(
-                            epsilon=self.epsilon,
-                            max_distance=self.max_distance,
-                            min_ver_supp=self.min_ver_supp,
-                            symbols=[symbol_1, symbol_2],
-                            relations=[rel],
-                            k=2,
-                        )
-                        key = hash(tirp)
-                        if key not in tirp_dict:
+                        # Optimization: Check signature before creating object
+                        # Signature is ((sym1, sym2), (rel,)) matching TIRP structure
+                        signature = ((symbol_1, symbol_2), (rel,))
+
+                        if signature not in tirp_dict:
+                            # First time seeing this pair+relation
+                            tirp = TIRP(
+                                epsilon=self.epsilon,
+                                max_distance=self.max_distance,
+                                min_ver_supp=self.min_ver_supp,
+                                symbols=[symbol_1, symbol_2],
+                                relations=[rel],
+                                k=2,
+                            )
                             tirp.entity_indices_supporting = [eid]
                             tirp.indices_of_last_symbol_in_entities = [j]
                             tirp.embeddings_map = {eid: [(i, j)]}
-                            tirp_dict[key] = tirp
+                            tirp_dict[signature] = tirp
+
                         else:
-                            existing = tirp_dict[key]
+                            existing = tirp_dict[signature]
                             existing.entity_indices_supporting.append(eid)
                             existing.indices_of_last_symbol_in_entities.append(j)
                             existing.embeddings_map.setdefault(eid, []).append((i, j))
@@ -1068,7 +1073,10 @@ class Lego(KarmaLego):
             New candidate TIRPs of length k+1 (not yet filtered by support).
         """
         curr_num_of_symbols = len(tirp.symbols)
-        all_possible = []
+        
+        # Optimization: Use a dict to deduplicate candidates by signature immediately
+        # Key: (new_symbol, tuple(new_relations)) -> Value: TIRP object
+        candidates = {}
 
         # Prefer embedding-aware enumeration for CSAC
         sources = []
@@ -1077,9 +1085,7 @@ class Lego(KarmaLego):
                 for tup in tuples:
                     sources.append((tup[-1], ent_index, tup))
         else:
-            # fallback to legacy last-index heuristic
-            sources = [(sym_idx, ent_idx, None)
-                       for sym_idx, ent_idx in zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting)]
+            raise RuntimeError("Lego extension requires embeddings_map for CSAC; legacy path disabled.")
         
         for sym_index, ent_index, parent_tuple in sources:
             # Use precomputed sorted entity to avoid re-sorting
@@ -1119,20 +1125,22 @@ class Lego(KarmaLego):
                         )
 
                     new_relations.reverse()  # match original ordering semantics
-                    child = TIRP(
-                        epsilon=self.epsilon,
-                        max_distance=self.max_distance,
-                        min_ver_supp=self.min_ver_supp,
-                        symbols=[*tirp.symbols, new_symbol],
-                        relations=[*tirp.relations, *new_relations],
-                        k=tirp.k + 1,
-                    )
-                    # CSAC propagation
-                    child.parent_entity_indices_supporting = list(tirp.entity_indices_supporting)
-                    child.parent_embeddings_map = tirp.embeddings_map
-                    child.entity_indices_supporting = []
-                    child.indices_of_last_symbol_in_entities = []
-                    all_possible.append(child)
-        return all_possible
+                    signature = (new_symbol, tuple(new_relations)) # Optimization: Check signature
+                    if signature not in candidates:
+                        child = TIRP(
+                            epsilon=self.epsilon,
+                            max_distance=self.max_distance,
+                            min_ver_supp=self.min_ver_supp,
+                            symbols=[*tirp.symbols, new_symbol],
+                            relations=[*tirp.relations, *new_relations],
+                            k=tirp.k + 1,
+                        )
+                        # CSAC propagation
+                        child.parent_entity_indices_supporting = list(tirp.entity_indices_supporting)
+                        child.parent_embeddings_map = tirp.embeddings_map
+                        child.entity_indices_supporting = []
+                        child.indices_of_last_symbol_in_entities = []
+                        candidates[signature] = child
+        return list(candidates.values())
 
 
