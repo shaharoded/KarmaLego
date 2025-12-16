@@ -1048,7 +1048,7 @@ class Lego(KarmaLego):
                     if current.data.k == 1:
                         extensions = []
                     else:
-                        extensions = list(set(self.all_extensions(entity_list, current.data, precomputed)))
+                        extensions = self.all_extensions(entity_list, current.data, precomputed)
                     ok = []
                     iterator = extensions
                     if self.show_detail:
