@@ -5,7 +5,7 @@ import pandas as pd
 import dask.dataframe as dd
 from typing import Tuple, Dict, Union, Optional
 
-REQUIRED_COLUMNS = {"PatientID", "ConceptName", "StartDateTime", "EndDateTime", "Value"}
+REQUIRED_COLUMNS = {"PatientId", "ConceptName", "StartDateTime", "EndDateTime", "Value"}
 
 
 def _parse_datetime_to_ns(series: pd.Series) -> Optional[pd.Series]:
@@ -98,8 +98,8 @@ def validate_input(df: Union[pd.DataFrame, dd.DataFrame]) -> None:
 
     # Optionally check for nulls in essential columns (do a sample for dask)
     def _null_check(pdf):
-        if pdf["PatientID"].isnull().any():
-            raise ValueError("Null PatientID found")
+        if pdf["PatientId"].isnull().any():
+            raise ValueError("Null PatientId found")
         if pdf["ConceptName"].isnull().any():
             raise ValueError("Null ConceptName found")
         if pdf["StartDateTime"].isnull().any() or pdf["EndDateTime"].isnull().any():
@@ -168,7 +168,7 @@ def preprocess_dataframe(
     value_col: str = "Value",
     start_col: str = "StartDateTime",
     end_col: str = "EndDateTime",
-    patient_col: str = "PatientID",
+    patient_col: str = "PatientId",
 ) -> Union[pd.DataFrame, dd.DataFrame]:
     """
     Normalize dtypes, map symbols to ints, and standardize times to int64.
@@ -205,7 +205,7 @@ def preprocess_dataframe(
 
 def to_entity_list(
     df: Union[pd.DataFrame, dd.DataFrame],
-    patient_col: str = "PatientID",
+    patient_col: str = "PatientId",
     start_col: str = "StartDateTime",
     end_col: str = "EndDateTime",
     symbol_col: str = "symbol",

@@ -105,7 +105,7 @@ KarmaLego/
 │   ├── relation_table.py                       # temporal relation transition tables and definitions
 │   └── utils.py                                # low-level helpers
 ├── data/
-│   ├── synthetic_diabetes_temporal_data.csv    # example input dataset
+│   ├── synthetic_diabetes_temporal_data.csv    # example input dataset (output from the Mediator)
 │   ├── symbol_map.json                         # saved symbol encoding (concept:value -> int)
 │   └── inverse_symbol_map.json                 # reverse mapping for human-readable decoding
 ├── unittests/
@@ -145,7 +145,7 @@ The `-e .` makes the local package importable as `core.karmalego` during develop
 
 Input must be a table (CSV or DataFrame) with these columns:
 
-- `PatientID` : identifier per entity (patient)
+- `PatientId` : identifier per entity (patient)
 - `ConceptName` : event or concept (e.g., lab test name)
 - `StartDateTime` : interval start (e.g., `"08/01/2023 00:00"` in `DD/MM/YYYY HH:MM`)
 - `EndDateTime` : interval end (same format)
@@ -155,7 +155,7 @@ You have full flexibility to affect the input and output shapes and formats in t
 
 Example row:
 ```
-PatientID,ConceptName,StartDateTime,EndDateTime,Value
+PatientId,ConceptName,StartDateTime,EndDateTime,Value
 p1,HbA1c,08/01/2023 0:00,08/01/2023 0:15,High
 ```
 
@@ -183,7 +183,7 @@ python main.py
 
 This produces:
 - `discovered_patterns.csv` — flat table of frequent TIRPs with support and decoded symbols.
-- `patient_pattern_vectors.ALL.csv` — one row per (PatientID, Pattern) with 5 columns:
+- `patient_pattern_vectors.ALL.csv` — one row per (PatientId, Pattern) with 5 columns:
     tirp_count_unique_last, tirp_count_all, tpf_dist_unique_last, tpf_dist_all, tpf_duration
 
 You can pivot `patient_pattern_vectors.ALL.csv` to a wide feature matrix for modeling.
@@ -298,7 +298,7 @@ rows = []
 for pid in patient_ids:
     for rep in pattern_keys:
         rows.append({
-            "PatientID": pid,
+            "PatientId": pid,
             "Pattern": rep_to_str.get(rep, rep),
             "tirp_count_unique_last": vec_count_ul.get(pid, {}).get(rep, 0.0),
             "tirp_count_all":         vec_count_all.get(pid, {}).get(rep, 0.0),
@@ -347,7 +347,7 @@ Contains:
 
 ### Patient Pattern Vectors (`patient_pattern_vectors.ALL.csv`)
 
-Wide long format: one row per (PatientID, Pattern) with the following columns:
+Wide long format: one row per (PatientId, Pattern) with the following columns:
 
 - `tirp_count_unique_last` — horizontal support per patient using **unique_last** counting.
 - `tirp_count_all` — horizontal support per patient counting **all** embeddings.
@@ -391,6 +391,8 @@ Memory usage is driven by:
 | **100k** | 50M             | 20            | 32 GB          | 64 GB           | Server / Split. |
 | **100k** | 50M             | 50            | 64 GB          | 128 GB          | **Split Cohort.** |
 | **100k** | 50M             | 100           | 128 GB+        | 256 GB+         | **Must Split.** |
+
+>> These loads are only assessed by AI and are not verified in real usage.
 
 **Mitigation Strategy:**
 If your data exceeds these limits, **do not run as a single job**.
