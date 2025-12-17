@@ -26,7 +26,11 @@ def _worker_process(job_info):
     print(f"Starting job: {name}")
     # Run discovery (returns tuple, we take the first element: the DataFrame)
     result = kl.discover_patterns(data, **runtime_args)
-    df = result[0]
+    
+    if isinstance(result, tuple):
+        df = result[0]
+    else:
+        df = result
     
     # Add job identifier
     df['job_name'] = name

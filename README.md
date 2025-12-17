@@ -231,11 +231,49 @@ If you prefer “non-overlapping” or “one-per-window” counts for downstrea
 ```python
 from core.karmalego import KarmaLego
 
+# Prepare entity list, examples in io.py module (may vary between datasources)
+# Full running example in main.py
+
 kl = KarmaLego(epsilon=pd.Timedelta(minutes=1),
                max_distance=pd.Timedelta(hours=1),
                min_ver_supp=0.03)
 
 df_patterns = kl.discover_patterns(entity_list, min_length=1, max_length=None)  # returns DataFrame
+```
+
+### Parallel Discover Patterns Across Different Cohorts
+
+```python
+from core.parallel_runner import run_parallel_jobs
+
+# 1. Define your jobs
+# Each job is a dict with 'name', 'data' (entity_list), and 'params'
+jobs = [
+    {
+        'name': 'cohort_A',
+        'data': entity_list_A,
+        'params': {
+            'epsilon': pd.Timedelta(minutes=1),
+            'max_distance': pd.Timedelta(hours=1),
+            'min_ver_supp': 0.5,
+            'min_length': 2
+        }
+    },
+    {
+        'name': 'cohort_B',
+        'data': entity_list_B,
+        'params': {
+            'epsilon': pd.Timedelta(minutes=1),
+            'max_distance': pd.Timedelta(hours=1),
+            'min_ver_supp': 0.4,
+            'min_length': 2
+        }
+    }
+]
+
+# 2. Run in parallel (uses multiprocessing)
+# Returns a single DataFrame with a 'job_name' column identifying the source job
+df_all = run_parallel_jobs(jobs, num_workers=4)
 ```
 
 ### Apply to Patients
@@ -272,7 +310,7 @@ for pid in patient_ids:
 import pandas as pd
 pd.DataFrame(rows).to_csv("data/patient_pattern_vectors.ALL.csv", index=False)
 ```
-
+>> This block can be parallelized on a patient level or on a function level, but since it's usage can change between works, no point in adding a single parallelism method.
 ---
 
 ## Unit-Testing
@@ -317,18 +355,48 @@ Wide long format: one row per (PatientID, Pattern) with the following columns:
 - `tpf_dist_all` — min–max of `tirp_count_all` across patients, per pattern.
 - `tpf_duration` — **union** of embedding spans per patient (no overlap double-counting), then min–max across patients, per pattern.
 
-> Note: `tpf-*` values are normalized **per pattern** to [0,1] across the cohort.  
-> Example for singletons: if `A` spans are `[1,2,1]` across patients, they normalize to `[0.0, 1.0, 0.0]`.
+>> Note: `tpf-*` values are normalized **per pattern** to [0,1] across the cohort.  
+>> Example for singletons: if `A` spans are `[1,2,1]` across patients, they normalize to `[0.0, 1.0, 0.0]`.
 
 ---
 
 ## Tips for Scaling
 
-- Replace `pandas.read_csv` with `dask.dataframe.read_csv` for large inputs; the ingestion helpers support Dask.
+- Replace `pandas.read_csv` with `dask.dataframe.read_csv` for large inputs; the ingestion helpers in `io.py` support Dask.
 - Persist precomputed symbol maps to keep encoding stable across runs.
 - Use categorical dtype for symbol column after mapping to reduce memory pressure.
 - Tune `min_ver_supp` to control pattern explosion vs sensitivity.
 - If memory is tight on extremely dense data, consider limiting `max_k` or post-processing horizontal support to non-overlapping counts; CSAC itself preserves correctness but can retain many embeddings per entity for highly frequent TIRPs.
+
+### Memory Limitations & Capacity Planning
+
+This implementation is **entirely in-memory**. The raw data (`entity_list`), the pattern tree, and the CSAC embedding maps (which store valid index-tuples for every active pattern) all reside in RAM.
+
+Memory usage is driven by:
+1. **Dataset Size:** Number of records (intervals).
+2. **Pattern Density:** How many frequent patterns exist and how many embeddings they have per patient.
+3. **CSAC Overhead:** Storing exact embedding tuples for active candidates is memory-intensive for dense data.
+
+**Rough Estimation Table**
+*Assumption: Average of 500 records (intervals) per patient.*
+
+| Patients | Records (Total) | Unique Events | Est. RAM (Min) | Est. RAM (Safe) | Recommendation |
+|----------|-----------------|---------------|----------------|-----------------|----------------|
+| **10k**  | 5M              | 20            | 4 GB           | 8 GB            | Laptop OK. |
+| **10k**  | 5M              | 50            | 8 GB           | 16 GB           | Workstation. |
+| **10k**  | 5M              | 100           | 16 GB          | 32 GB           | High-RAM Workstation. |
+| **50k**  | 25M             | 20            | 16 GB          | 32 GB           | High-RAM Workstation. |
+| **50k**  | 25M             | 50            | 32 GB          | 64 GB           | Server / Split. |
+| **50k**  | 25M             | 100           | 64 GB          | 128 GB          | **Split Cohort.** |
+| **100k** | 50M             | 20            | 32 GB          | 64 GB           | Server / Split. |
+| **100k** | 50M             | 50            | 64 GB          | 128 GB          | **Split Cohort.** |
+| **100k** | 50M             | 100           | 128 GB+        | 256 GB+         | **Must Split.** |
+
+**Mitigation Strategy:**
+If your data exceeds these limits, **do not run as a single job**.
+1. **Split the cohort:** Divide patients into chunks (e.g., 10k patients per chunk).
+2. **Run in parallel:** Use the `run_parallel_jobs` utility to process chunks independently.
+3. **Merge results:** Concatenate the resulting pattern DataFrames. Note that vertical support will be local to each chunk; you may need to re-aggregate global support if exact global statistics are required.
 
 ---
 
