@@ -34,7 +34,7 @@ if __name__ == "__main__":
 
     # 6. Discover patterns
     kl = KarmaLego(epsilon=pd.Timedelta(minutes=1),
-                max_distance=pd.Timedelta(hours=1),
+                max_distance=pd.Timedelta(hours=24),
                 min_ver_supp=0.5)
 
     patterns_path = "data/discovered_patterns.csv"
