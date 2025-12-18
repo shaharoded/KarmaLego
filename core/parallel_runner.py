@@ -1,5 +1,6 @@
 import pandas as pd
 from core.karmalego import KarmaLego
+import os
 import multiprocessing
 
 def _worker_process(job_info):
@@ -57,7 +58,7 @@ def run_parallel_jobs(jobs_list, num_workers=None):
         Concatenated results from all jobs.
     """
     if num_workers is None:
-        num_workers = multiprocessing.cpu_count()
+        num_workers = min(len(jobs_list), os.cpu_count())
         
     print(f"Running {len(jobs_list)} jobs with {num_workers} workers...")
     
