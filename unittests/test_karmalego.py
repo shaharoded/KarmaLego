@@ -257,3 +257,245 @@ def test_max_length_pruning_efficiency(simple_chain_entities):
             max_depth = max(max_depth, node.data.k)
         stack.extend(node.children)
     assert max_depth <= 2, f"Tree contains nodes deeper than max_length=2 (found k={max_depth})"
+
+
+# ============================================================================
+# TESTS FOR 3-RELATION TABLE (Minimal: before, overlaps, contains)
+# ============================================================================
+
+def test_3_relations_discovery_basic():
+    """
+    Test pattern discovery with 3 relations.
+    
+    Setup:
+      p1: A(0,1) < B(2,3)        -> A < B
+      p2: A(0,2) o B(1,3)        -> A o B (overlaps)
+      p3: A(0,3) c B(1,2)        -> A c B (contains)
+    
+    All relations should be discoverable with 3-relation table.
+    """
+    p1 = [(0, 1, "A"), (2, 3, "B")]  # A < B
+    p2 = [(0, 2, "A"), (1, 3, "B")]  # A o B
+    p3 = [(0, 3, "A"), (1, 2, "B")]  # A c B
+    entities = [p1, p2, p3]
+    
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/3, num_relations=3)
+    assert kl.num_relations == 3
+    
+    df, tirps = kl.discover_patterns(entities, min_length=1, return_tirps=True)
+    
+    # Check singletons
+    tA = extract_pattern_by_signature(tirps, ["A"], [])
+    tB = extract_pattern_by_signature(tirps, ["B"], [])
+    assert tA and tB
+    
+    # Check pairs with 3 relations: <, o, c
+    tA_B_before = extract_pattern_by_signature(tirps, ["A", "B"], ["<"])
+    tA_B_overlap = extract_pattern_by_signature(tirps, ["A", "B"], ["o"])
+    tA_B_contains = extract_pattern_by_signature(tirps, ["A", "B"], ["c"])
+    
+    assert tA_B_before is not None, "Should find A < B"
+    assert tA_B_overlap is not None, "Should find A o B"
+    assert tA_B_contains is not None, "Should find A c B"
+
+
+def test_3_relations_composition():
+    """
+    Verify 3-relation composition table works correctly.
+    
+    Test: If A < B and B o C, the result should be A < C
+           (from coarsened 7-relation rule)
+    """
+    from core.relation_table import set_relation_table, compose_relation, get_num_relations
+    
+    set_relation_table(3)
+    assert get_num_relations() == 3
+    
+    # A < B, B o C => A < C
+    result = compose_relation('<', 'o')
+    assert '<' in result, f"Expected '<' in {result}"
+    
+    # A o B, B o C => A can be <, o, or c
+    result = compose_relation('o', 'o')
+    assert set(result) == {'<', 'o', 'c'}, f"Expected {{'<', 'o', 'c'}}, got {set(result)}"
+    
+    # A c B, B c C => A c C
+    result = compose_relation('c', 'c')
+    assert result == ['c'], f"Expected ['c'], got {result}"
+
+
+def test_3_relations_apply_patterns():
+    """
+    Test applying discovered 3-relation patterns.
+    """
+    p1 = [(0, 1, "A"), (2, 3, "B")]  # A < B
+    p2 = [(0, 2, "A"), (1, 3, "B")]  # A o B
+    entities = [p1, p2]
+    patient_ids = ["p1", "p2"]
+    
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/2, num_relations=3)
+    df, tirps = kl.discover_patterns(entities, min_length=2, return_tirps=True)
+    
+    # Should find A<B in p1 and A o B in p2
+    applied = kl.apply_patterns_to_entities(
+        entities, df, patient_ids, mode="tirp-count", count_strategy="unique_last"
+    )
+    
+    # Both patterns should have vertical support 1/2
+    assert any(t.vertical_support == 1/2 for t in tirps), "Should find patterns with vertical support 1/2"
+
+
+# ============================================================================
+# TESTS FOR 5-RELATION TABLE (Intermediate: before, overlaps, contains, started-by, finished-by)
+# ============================================================================
+
+def test_5_relations_discovery_basic():
+    """
+    Test pattern discovery with 5 relations.
+    
+    Setup:
+      p1: A(0,1) < B(2,3)        -> A < B
+      p2: A(0,2) o B(1,3)        -> A o B (overlaps)
+      p3: A(0,3) c B(1,2)        -> A c B (contains)
+      p4: A(0,3) f B(1,3)        -> A f B (finished-by)
+    
+    All key relations should be discoverable with 5-relation table.
+    """
+    p1 = [(0, 1, "A"), (2, 3, "B")]  # A < B
+    p2 = [(0, 2, "A"), (1, 3, "B")]  # A o B
+    p3 = [(0, 3, "A"), (1, 2, "B")]  # A c B
+    p4 = [(0, 3, "A"), (1, 3, "B")]  # A f B (finished-by)
+    entities = [p1, p2, p3, p4]
+    
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/4, num_relations=5)
+    assert kl.num_relations == 5
+    
+    df, tirps = kl.discover_patterns(entities, min_length=2, return_tirps=True)
+    
+    # Check for key relations that should be discoverable
+    tA_B_before = extract_pattern_by_signature(tirps, ["A", "B"], ["<"])
+    tA_B_overlap = extract_pattern_by_signature(tirps, ["A", "B"], ["o"])
+    tA_B_contains = extract_pattern_by_signature(tirps, ["A", "B"], ["c"])
+    tA_B_finished = extract_pattern_by_signature(tirps, ["A", "B"], ["f"])
+    
+    assert tA_B_before is not None, "Should find A < B"
+    assert tA_B_overlap is not None, "Should find A o B"
+    assert tA_B_contains is not None, "Should find A c B"
+    assert tA_B_finished is not None, "Should find A f B"
+
+
+def test_5_relations_composition():
+    """
+    Verify 5-relation composition table works correctly.
+    
+    Test key compositions from the coarsened 7-relation table.
+    """
+    from core.relation_table import set_relation_table, compose_relation, get_num_relations
+    
+    set_relation_table(5)
+    assert get_num_relations() == 5
+    
+    # A < B, B o C => A < C
+    result = compose_relation('<', 'o')
+    assert '<' in result, f"Expected '<' in {result}"
+    
+    # A o B, B o C => A can be < or o (from coarsened rule)
+    result = compose_relation('o', 'o')
+    assert set(result) == {'<', 'o'}, f"Expected {{'<', 'o'}}, got {set(result)}"
+    
+    # A c B, B c C => A c C
+    result = compose_relation('c', 'c')
+    assert result == ['c'], f"Expected ['c'], got {result}"
+    
+    # A s B, B s C => A s C
+    result = compose_relation('s', 's')
+    assert result == ['s'], f"Expected ['s'], got {result}"
+
+
+def test_5_relations_apply_patterns():
+    """
+    Test applying discovered 5-relation patterns.
+    """
+    p1 = [(0, 1, "A"), (2, 3, "B")]  # A < B
+    p2 = [(0, 3, "A"), (0, 2, "B")]  # A s B (started-by)
+    entities = [p1, p2]
+    patient_ids = ["p1", "p2"]
+    
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/2, num_relations=5)
+    df, tirps = kl.discover_patterns(entities, min_length=2, return_tirps=True)
+    
+    # Should find A<B and A s B
+    applied = kl.apply_patterns_to_entities(
+        entities, df, patient_ids, mode="tirp-count", count_strategy="unique_last"
+    )
+    
+    # Both patterns should have vertical support 1/2
+    assert any(t.vertical_support == 1/2 for t in tirps), "Should find patterns with vertical support 1/2"
+
+
+def test_num_relations_switching():
+    """
+    Test that num_relations parameter correctly switches between tables.
+    """
+    from core.relation_table import get_num_relations
+    
+    # Create with 3 relations
+    kl3 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=0.5, num_relations=3)
+    assert kl3.num_relations == 3
+    assert get_num_relations() == 3
+    
+    # Create with 5 relations (should switch table)
+    kl5 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=0.5, num_relations=5)
+    assert kl5.num_relations == 5
+    assert get_num_relations() == 5
+    
+    # Create with 7 relations (default)
+    kl7 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=0.5, num_relations=7)
+    assert kl7.num_relations == 7
+    assert get_num_relations() == 7
+
+
+def test_invalid_num_relations():
+    """
+    Test that invalid num_relations raises ValueError.
+    """
+    with pytest.raises(ValueError):
+        KarmaLego(epsilon=0, max_distance=100, min_ver_supp=0.5, num_relations=4)
+    
+    with pytest.raises(ValueError):
+        KarmaLego(epsilon=0, max_distance=100, min_ver_supp=0.5, num_relations=10)
+
+
+def test_3_vs_5_vs_7_relations_pattern_discovery():
+    """
+    Compare pattern discovery with 3, 5, and 7 relations on the same data.
+    Expect 3-relation to find broader patterns due to relation coarsening,
+    and 7-relation to find more specific patterns.
+    """
+    # Complex data with all relation types
+    p1 = [(0, 1, "A"), (2, 3, "B"), (4, 5, "C")]  # A < B < C
+    p2 = [(0, 2, "A"), (1, 3, "B"), (4, 5, "C")]  # A o B < C
+    p3 = [(0, 3, "A"), (1, 2, "B"), (4, 5, "C")]  # A c B < C
+    entities = [p1, p2, p3]
+    
+    # Discover with 3 relations
+    kl3 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/3, num_relations=3)
+    df3, tirps3 = kl3.discover_patterns(entities, min_length=2, return_tirps=True)
+    patterns3 = len(tirps3)
+    
+    # Discover with 5 relations
+    kl5 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/3, num_relations=5)
+    df5, tirps5 = kl5.discover_patterns(entities, min_length=2, return_tirps=True)
+    patterns5 = len(tirps5)
+    
+    # Discover with 7 relations
+    kl7 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/3, num_relations=7)
+    df7, tirps7 = kl7.discover_patterns(entities, min_length=2, return_tirps=True)
+    patterns7 = len(tirps7)
+    
+    # 3-relation should find fewer or equal patterns (more coarsened)
+    # 7-relation should find more patterns (more specific)
+    # 5-relation should be in between
+    assert patterns3 >= 1, "Should find at least 1 pattern with 3 relations"
+    assert patterns5 >= patterns3, "5-relation should find >= patterns as 3-relation"
+    assert patterns7 >= patterns5, "7-relation should find >= patterns as 5-relation"

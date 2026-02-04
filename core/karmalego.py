@@ -15,6 +15,7 @@ from core.utils import (
     find_all_possible_extensions,
     decode_pattern
 )
+from core.relation_table import set_relation_table
 
 # logging decorator
 logger = logging.getLogger(__name__)
@@ -546,10 +547,35 @@ class KarmaLego:
     min_ver_supp:
         Minimum vertical support threshold for a pattern to be kept.
     """
-    def __init__(self, epsilon, max_distance, min_ver_supp):
+    def __init__(self, epsilon, max_distance, min_ver_supp, num_relations=7):
+        """
+        Initialize KarmaLego with temporal pattern discovery parameters.
+
+        Parameters
+        ----------
+        epsilon : float or pd.Timedelta
+            Temporal tolerance for matching interval endpoints.
+        max_distance : float or pd.Timedelta
+            Maximum temporal gap to consider influence between intervals.
+        min_ver_supp : float
+            Minimum vertical support threshold for a pattern to be kept.
+        num_relations : int, default=7
+            Number of temporal relations to support: 3, 5, or 7.
+            - 3: minimal - fastest
+            - 5: intermediate - balanced
+            - 7: full Allen forward relations - most detailed
+            NOTE: Full relations documentation is in core/relation_table.py
+
+        Raises
+        ------
+        ValueError
+            If num_relations is not 3, 5, or 7.
+        """
         self.epsilon = normalize_time_param(epsilon)
         self.max_distance = normalize_time_param(max_distance)
         self.min_ver_supp = min_ver_supp
+        self.num_relations = num_relations
+        set_relation_table(num_relations)
 
     @log_execution
     def discover_patterns(
