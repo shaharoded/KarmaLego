@@ -281,7 +281,8 @@ def set_relation_table(num_relations):
     Raises
     ------
     ValueError
-        If num_relations is not 3, 5, or 7.
+        If num_relations is not 3, 5, or 7. Includes information about
+        valid options and their use cases.
     """
     global _active_transition_table, _active_num_relations
 
@@ -295,7 +296,12 @@ def set_relation_table(num_relations):
         _active_transition_table = _transition_table_7
         _active_num_relations = 7
     else:
-        raise ValueError(f"num_relations must be 3, 5, or 7, got {num_relations}")
+        raise ValueError(
+            f"Invalid num_relations={num_relations}. Must be one of:\n"
+            f"  3 : Minimal (before, overlaps, contains) - fastest\n"
+            f"  5 : Intermediate (before, overlaps, contains, started-by, finished-by) - balanced\n"
+            f"  7 : Full Allen (all 7 relations) - most detailed"
+        )
     
     # Clear the lru_cache since table has changed
     compose_relation.cache_clear()
