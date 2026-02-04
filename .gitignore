@@ -16,6 +16,6 @@ venv/
 # Mappings
 *symbol_map.json
 
-# Output files
-discovered_patterns.csv
-patient_pattern_vectors*
+# # Output files
+# discovered_patterns.csv
+# patient_pattern_vectors*
