@@ -499,3 +499,41 @@ def test_3_vs_5_vs_7_relations_pattern_discovery():
     assert patterns3 >= 1, "Should find at least 1 pattern with 3 relations"
     assert patterns5 >= patterns3, "5-relation should find >= patterns as 3-relation"
     assert patterns7 >= patterns5, "7-relation should find >= patterns as 5-relation"
+
+
+@pytest.mark.parametrize("num_relations", [3, 5, 7])
+def test_each_relation_emitted_separately(num_relations):
+    """
+    Test that each relation in the table is properly emitted when present in the data.
+    For each relation available in the given num_relations, create data that exhibits
+    that specific relation and verify the pattern is discovered.
+    """
+    # Define which relations are in each table
+    relations_per_table = {
+        3: ['<', 'o', 'c'],
+        5: ['<', 'o', 'c', 'f', 's'],
+        7: ['<', 'm', 'o', 'c', 'f', 's', '=']
+    }
+    
+    # Example interval pairs for each relation
+    relation_examples = {
+        '<': [(0, 1, "A"), (2, 3, "B")],  # A before B
+        'm': [(0, 1, "A"), (1, 2, "B")],  # A meets B
+        'o': [(0, 2, "A"), (1, 3, "B")],  # A overlaps B
+        'c': [(0, 3, "A"), (1, 2, "B")],  # A contains B
+        'f': [(0, 2, "A"), (1, 2, "B")],  # A finished-by B
+        's': [(0, 2, "A"), (0, 1, "B")],  # A started-by B
+        '=': [(0, 1, "A"), (0, 1, "B")]   # A equal B
+    }
+    
+    for rel in relations_per_table[num_relations]:
+        # Create entities with one patient exhibiting this relation
+        entities = [relation_examples[rel]]
+        patient_ids = ["p1"]
+        
+        kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1.0, num_relations=num_relations)
+        df, tirps = kl.discover_patterns(entities, min_length=2, return_tirps=True)
+        
+        # Check that the pattern with this relation is found
+        pattern = extract_pattern_by_signature(tirps, ["A", "B"], [rel])
+        assert pattern is not None, f"Should find pattern A {rel} B for {num_relations} relations"

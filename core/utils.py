@@ -26,9 +26,10 @@ def normalize_time_param(x):
 def lexicographic_sorting(entity):
     """
     entity: list of tuples (start, end, symbol)
-    Sort by start, then end, then symbol.
+    Sort by start, then end (descending), then symbol.
+    Keeps the forward temporal order while ensuring a consistent ordering for intervals with the same start time.
     """
-    return sorted(entity, key=lambda x: (x[0], x[1], x[2]))
+    return sorted(entity, key=lambda x: (x[0], -x[1], x[2]))
 
 
 def temporal_relations(ti_1, ti_2, epsilon, max_distance):

@@ -39,6 +39,42 @@ This structure enables efficient discovery of high-order, temporally consistent 
 
 ---
 
+## Temporal Relations
+
+KarmaLego supports three levels of temporal relation granularity: 3, 5, and 7 relations. Each level coarsens the full 7-relation Allen algebra for performance. Relations are defined between interval pairs (A, B) using start and end times.
+
+### 3 Relations (Minimal)
+
+| Relation | Explanation |
+|----------|-------------|
+| '<' | A ends before B starts (A < B) |
+| 'o' | A overlaps B: A starts before B, A ends during B, B ends after A (A o B) |
+| 'c' | A contains B: A starts before B and ends after B (A c B) |
+
+### 5 Relations (Intermediate)
+
+| Relation | Explanation |
+|----------|-------------|
+| '<' | A ends before B starts (A < B) |
+| 'o' | A overlaps B: A starts before B, A ends during B, B ends after A (A o B) |
+| 'c' | A contains B: A starts before B and ends after B (A c B) |
+| 'f' | A is finished-by B: A starts before B, A and B end at the same time (A f B) |
+| 's' | A is started-by B: A and B start at the same time, A ends after B (A s B) |
+
+### 7 Relations (Full Allen)
+
+| Relation | Explanation |
+|----------|-------------|
+| '<' | A ends before B starts (A < B) |
+| 'm' | A meets B: A ends exactly when B starts (A m B) |
+| 'o' | A overlaps B: A starts before B, A ends during B, B ends after A (A o B) |
+| 'c' | A contains B: A starts before B and ends after B (A c B) |
+| 'f' | A is finished-by B: A starts before B, A and B end at the same time (A f B) |
+| 's' | A is started-by B: A and B start at the same time, A ends after B (A s B) |
+| '=' | A equals B: A and B have identical start and end times (A = B) |
+
+---
+
 ## Repository Overview
 
 This repository provides:
