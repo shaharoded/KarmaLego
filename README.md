@@ -435,17 +435,3 @@ If your data exceeds these limits, **do not run as a single job**.
 1. **Split the cohort:** Divide patients into chunks (e.g., 10k patients per chunk).
 2. **Run in parallel:** Use the `run_parallel_jobs` utility to process chunks independently.
 3. **Merge results:** Concatenate the resulting pattern DataFrames. Note that vertical support will be local to each chunk; you may need to re-aggregate global support if exact global statistics are required.
-
----
-
-## Development Notes
-
-- Core logic lives in `core/karmalego.py`. Utilities (relation inference, transition tables) in `core/utils.py` and `core/relation_table.py`.  
-- Input-Output logic lives in `core/io.py` and controls the formats, data structure, source and destination. Currently adjusted to work on local CPU with csv files. 
-- The pattern tree is built lazily/iteratively; flat exports are used downstream for speed.  
-- Equality and hashing ensure duplicate candidate patterns merge correctly.  
-- Tests provide deterministic synthetic scenarios for regression.
-- SAC/CSAC implementation notes: 
-  - We store embeddings_map on each TIRP (per-entity lists of index tuples) and pass it to children as parent_embeddings_map so LEGO only considers child embeddings that extend actual parent tuples (CSAC).
-  - After support filtering, we free parent_embeddings_map. If a node has no valid extensions, we also free its own embeddings_map.
-  - LEGO does not extend singletons; pairs are produced in Karma once and re-used, eliminating duplicate pair discovery.
