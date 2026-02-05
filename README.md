@@ -270,9 +270,10 @@ from core.karmalego import KarmaLego
 # Prepare entity list, examples in io.py module (may vary between datasources)
 # Full running example in main.py
 
-kl = KarmaLego(epsilon=pd.Timedelta(minutes=1),
-               max_distance=pd.Timedelta(hours=1),
-               min_ver_supp=0.03)
+kl = KarmaLego(epsilon=pd.Timedelta(seconds=2),
+               max_distance=pd.Timedelta(hours=4),
+               min_ver_supp=0.03,
+               num_relations=7)
 
 df_patterns = kl.discover_patterns(entity_list, min_length=1, max_length=None)  # returns DataFrame
 ```

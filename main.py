@@ -33,7 +33,7 @@ if __name__ == "__main__":
     entity_list, patient_ids = to_entity_list(preprocessed)
 
     # 6. Discover patterns
-    kl = KarmaLego(epsilon=pd.Timedelta(minutes=1),
+    kl = KarmaLego(epsilon=pd.Timedelta(seconds=2),
                 max_distance=pd.Timedelta(hours=4),
                 min_ver_supp=0.5,
                 num_relations=3)
