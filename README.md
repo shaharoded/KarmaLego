@@ -184,7 +184,7 @@ The `-e .` makes the local package importable as `core.karmalego` during develop
 
 ---
 
-## Data Format Expected
+## Expected Data Format
 
 Input must be a table (CSV or DataFrame) with these columns:
 
@@ -354,7 +354,7 @@ for pid in patient_ids:
 import pandas as pd
 pd.DataFrame(rows).to_csv("data/patient_pattern_vectors.ALL.csv", index=False)
 ```
->> This block can be parallelized on a patient level or on a function level, but since it's usage can change between works, no point in adding a single parallelism method.
+>> This block can be parallelized on a patient level or on a function level, but since it's usage can change between works, I see no point in adding a single parallelism method to the module. Feel free to extend.
 ---
 
 ## Unit-Testing
@@ -417,29 +417,43 @@ Wide long format: one row per (PatientId, Pattern) with the following columns:
 This implementation is **entirely in-memory**. The raw data (`entity_list`), the pattern tree, and the CSAC embedding maps (which store valid index-tuples for every active pattern) all reside in RAM.
 
 Memory usage is driven by:
-1. **Dataset Size:** Number of records (intervals).
-2. **Pattern Density:** How many frequent patterns exist and how many embeddings they have per patient.
-3. **CSAC Overhead:** Storing exact embedding tuples for active candidates is memory-intensive for dense data.
+1. **Dataset Size:** Number of records (intervals) and number of patients.
+2. **Temporal Entity Count:** Number of unique `ConceptName:Value` pairs (not just unique `ConceptName`). Each distinct value (e.g., `"HbA1c:High"` vs `"HbA1c:Normal"`) is a separate temporal entity.
+3. **Number of Relations:** Coarser relation sets (2, 3) produce fewer patterns; finer sets (5, 7) explode combinatorially.
+4. **Pattern Density:** How many frequent patterns exist and how many embeddings they have per patient.
+5. **CSAC Overhead:** Storing exact embedding tuples for active candidates is memory-intensive for dense data.
 
-**Rough Estimation Table**
-*Assumption: Average of 500 records (intervals) per patient.*
+**Worst-Case Memory Estimation Table**
 
-| Patients | Records (Total) | Unique Events | Est. RAM (Min) | Est. RAM (Safe) | Recommendation |
-|----------|-----------------|---------------|----------------|-----------------|----------------|
-| **10k**  | 5M              | 20            | 4 GB           | 8 GB            | Laptop OK. |
-| **10k**  | 5M              | 50            | 8 GB           | 16 GB           | Workstation. |
-| **10k**  | 5M              | 100           | 16 GB          | 32 GB           | High-RAM Workstation. |
-| **50k**  | 25M             | 20            | 16 GB          | 32 GB           | High-RAM Workstation. |
-| **50k**  | 25M             | 50            | 32 GB          | 64 GB           | Server / Split. |
-| **50k**  | 25M             | 100           | 64 GB          | 128 GB          | **Split Cohort.** |
-| **100k** | 50M             | 20            | 32 GB          | 64 GB           | Server / Split. |
-| **100k** | 50M             | 50            | 64 GB          | 128 GB          | **Split Cohort.** |
-| **100k** | 50M             | 100           | 128 GB+        | 256 GB+         | **Must Split.** |
+*These estimates assume **all possible patterns up to k=5 are frequent** (worst case) and **dense embeddings** per patient. Real workloads with `min_ver_supp > 0` will use significantly less memory.*
 
->> These loads are only assessed by AI and are not verified in real usage.
+| Temporal Entities | Relations | Patterns (≤k=5) | Patients | Est. RAM (Worst) | Recommendation |
+|-------------------|-----------|-----------------|----------|------------------|----------------|
+| **20**            | 2         | ~67k            | 10k      | 8 GB             | Workstation OK. |
+| **20**            | 3         | ~130k           | 10k      | 12 GB            | Workstation OK. |
+| **20**            | 5         | ~320k           | 10k      | 24 GB            | High-RAM Workstation. |
+| **20**            | 7         | ~540k           | 10k      | 40 GB            | Server / Split. |
+| **50**            | 2         | ~2.6M           | 10k      | 64 GB            | Server / Split. |
+| **50**            | 3         | ~6.4M           | 10k      | 128 GB           | **Split Cohort.** |
+| **50**            | 5         | ~22M            | 10k      | 256 GB+          | **Must Split.** |
+| **50**            | 7         | ~48M            | 10k      | 512 GB+          | **Must Split.** |
+| **100**           | 2         | ~81M            | 10k      | 512 GB+          | **Must Split.** |
+| **100**           | 3         | ~242M           | 10k      | 1+ TB            | **Must Split.** |
+| **100**           | 5         | ~1.1B           | 10k      | 4+ TB            | **Must Split.** |
+| **100**           | 7         | ~2.8B           | 10k      | 8+ TB            | **Must Split.** |
+
+>> **Important:** These are **theoretical worst-case** numbers assuming zero Apriori pruning. In practice, `min_ver_supp` will eliminate the vast majority of candidate patterns, reducing memory by 10–100×. Use this table to understand upper bounds, not typical usage.
+
+**Pattern Count Formula (Worst Case):**
+For N temporal entities and R relations, patterns up to length k:
+$$\text{Patterns} = \sum_{i=1}^{k} \binom{N}{i} \times R^{i-1}$$
+
+For k=5, this grows as O(N⁵ × R⁴), which is why entity count and relation granularity are critical levers.
 
 **Mitigation Strategy:**
 If your data exceeds these limits, **do not run as a single job**.
-1. **Split the cohort:** Divide patients into chunks (e.g., 10k patients per chunk).
+1. **Split the cohort:** Divide patients into chunks where each chunk handles different temporal entities (a subset of concepts per chunk).
 2. **Run in parallel:** Use the `run_parallel_jobs` utility to process chunks independently.
-3. **Merge results:** Concatenate the resulting pattern DataFrames. Note that vertical support will be local to each chunk; you may need to re-aggregate global support if exact global statistics are required.
+3. **Merge results:** Concatenate the resulting pattern DataFrames.
+
+>> Note that a split based on subsets of patients should not be very efficient, as the in-memory tree might grow roughly to the same size. Only the process itself might be faster, but the memory usage should not be affected.

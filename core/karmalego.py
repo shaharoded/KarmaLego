@@ -1097,8 +1097,7 @@ class Lego(KarmaLego):
         entity_list :
             List of entities for support computation.
         precomputed:   
-            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
-            and 'symbol_index' (symbol -> positions within that entity). 
+            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals).
         max_length : int, optional (assigned int or None by KarmaLego.discover_patterns)
             Maximum pattern length (k) to extend to. If None, no limit.
 
@@ -1162,8 +1161,7 @@ class Lego(KarmaLego):
         tirp :
             Base TIRP to extend.
         precomputed:   
-            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
-            and 'symbol_index' (symbol -> positions within that entity). 
+            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals).
 
         Returns
         -------
