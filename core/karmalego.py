@@ -630,6 +630,10 @@ class KarmaLego:
         tree = karma.run_karma(entity_list, precomputed)
         t_karma_end = time.perf_counter()
 
+        # symbol_index is only needed for Karma; drop it before Lego to reduce memory
+        for entry in precomputed:
+            entry.pop("symbol_index", None)
+
         # Lego extension
         t_lego_start = time.perf_counter()
         lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True, num_relations=self.num_relations)
