@@ -1,7 +1,7 @@
 """
 Allen-like interval relation composition for KarmaLego.
 
-This module provides composition tables for temporal interval relations at three granularity levels.
+This module provides composition tables for temporal interval relations at four granularity levels.
 Each table defines how relations compose: given (A r B, B r C), what are possible A r C relations.
 
 IMPORTANT DESIGN NOTE:
@@ -22,6 +22,29 @@ READING THE TABLES:
 ---------------------------------------------------------------------
 AVAILABLE RELATION SETS
 ---------------------------------------------------------------------
+
+2 Relations (Ultra-coarse, coarsened from 7):
+        'p'  : proceed
+                     (MERGES: '<', 'm', 'o')
+        'c'  : contain
+                     (MERGES: 'c', 's', 'f', '=')
+
+    Coarsening rules:
+        - '<' (before)      → 'p'
+        - 'm' (meets)       → 'p'
+        - 'o' (overlaps)    → 'p'
+        - 'c' (contains)    → 'c'
+        - 's' (started-by)  → 'c'
+        - 'f' (finished-by) → 'c'
+        - '=' (equal)       → 'c'
+
+    Notes:
+        - This is the most compact forward-only algebra: ordering/overlap collapse to 'p',
+            and containment/equality collapse to 'c'.
+        - Guaranteed to be closed under composition when derived from the 7-relation table.
+
+    Use for:
+        Maximum throughput where only proceed vs contain is needed.
 
 7 Relations (Forward Allen-like, base algebra):
     '<'  : before
@@ -101,12 +124,29 @@ AVAILABLE RELATION SETS
 ---------------------------------------------------------------------
 
 USAGE:
-  Pass 'num_relations' ∈ {3, 5, 7} when initializing KarmaLego.
+  Pass 'num_relations' ∈ {2, 3, 5, 7} when initializing KarmaLego.
   The corresponding composition table is selected automatically.
 
 """
 
 from functools import lru_cache
+
+# ============================================================================
+# 2-RELATION COMPOSITION TABLE (Ultra-coarse: proceed, contain)
+# Coarsened from 7-relation table by merging:
+#   '<', 'm', 'o' -> 'p'
+#   'c', 's', 'f', '=' -> 'c'
+# ============================================================================
+_transition_table_2 = {
+    # A p B, B p C  =>  A p C
+    ('p', 'p'): ['p'],
+    # A p B, B c C  =>  A p C or c C
+    ('p', 'c'): ['p', 'c'],
+    # A c B, B p C  =>  A p C or c C
+    ('c', 'p'): ['p', 'c'],
+    # A c B, B c C  =>  A p C or c C
+    ('c', 'c'): ['p', 'c'],
+}
 
 # ============================================================================
 # 3-RELATION COMPOSITION TABLE (Minimal: before, overlaps, contains)
@@ -276,17 +316,20 @@ def set_relation_table(num_relations):
     Parameters
     ----------
     num_relations : int
-        Number of relations to support: 3, 5, or 7.
+        Number of relations to support: 2, 3, 5, or 7.
 
     Raises
     ------
     ValueError
-        If num_relations is not 3, 5, or 7. Includes information about
+        If num_relations is not 2, 3, 5, or 7. Includes information about
         valid options and their use cases.
     """
     global _active_transition_table, _active_num_relations
 
-    if num_relations == 3:
+    if num_relations == 2:
+        _active_transition_table = _transition_table_2
+        _active_num_relations = 2
+    elif num_relations == 3:
         _active_transition_table = _transition_table_3
         _active_num_relations = 3
     elif num_relations == 5:
@@ -298,7 +341,8 @@ def set_relation_table(num_relations):
     else:
         raise ValueError(
             f"Invalid num_relations={num_relations}. Must be one of:\n"
-            f"  3 : Minimal (before, overlaps, contains) - fastest\n"
+            f"  2 : Ultra-coarse (proceed, contain) - fastest\n"
+            f"  3 : Minimal (before, overlaps, contains) - fast\n"
             f"  5 : Intermediate (before, overlaps, contains, started-by, finished-by) - balanced\n"
             f"  7 : Full Allen (all 7 relations) - most detailed"
         )
@@ -326,7 +370,7 @@ def get_num_relations():
     Returns
     -------
     int
-        Number of relations: 3, 5, or 7.
+        Number of relations: 2, 3, 5, or 7.
     """
     return _active_num_relations
 

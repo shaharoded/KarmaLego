@@ -260,6 +260,83 @@ def test_max_length_pruning_efficiency(simple_chain_entities):
 
 
 # ============================================================================
+# TESTS FOR 2-RELATION TABLE (Ultra-coarse: proceed, contain)
+# ============================================================================
+
+def test_2_relations_discovery_basic():
+    """
+    Test pattern discovery with 2 relations.
+
+    Setup:
+      p1: A(0,1) < B(2,3)        -> A p B
+      p2: A(0,2) o B(1,3)        -> A p B
+      p3: A(0,3) c B(1,2)        -> A c B
+    """
+    p1 = [(0, 1, "A"), (2, 3, "B")]  # A < B -> p
+    p2 = [(0, 2, "A"), (1, 3, "B")]  # A o B -> p
+    p3 = [(0, 3, "A"), (1, 2, "B")]  # A c B -> c
+    entities = [p1, p2, p3]
+
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/3, num_relations=2)
+    assert kl.num_relations == 2
+
+    df, tirps = kl.discover_patterns(entities, min_length=1, return_tirps=True)
+
+    # Check singletons
+    tA = extract_pattern_by_signature(tirps, ["A"], [])
+    tB = extract_pattern_by_signature(tirps, ["B"], [])
+    assert tA and tB
+
+    # Check pairs with 2 relations: p, c
+    tA_B_proceed = extract_pattern_by_signature(tirps, ["A", "B"], ["p"])
+    tA_B_contain = extract_pattern_by_signature(tirps, ["A", "B"], ["c"])
+
+    assert tA_B_proceed is not None, "Should find A p B"
+    assert tA_B_contain is not None, "Should find A c B"
+
+
+def test_2_relations_composition():
+    """
+    Verify 2-relation composition table works correctly.
+    """
+    from core.relation_table import set_relation_table, compose_relation, get_num_relations
+
+    set_relation_table(2)
+    assert get_num_relations() == 2
+
+    # A p B, B p C => A p C
+    result = compose_relation('p', 'p')
+    assert result == ['p'], f"Expected ['p'], got {result}"
+
+    # A p B, B c C => A can be p or c
+    result = compose_relation('p', 'c')
+    assert set(result) == {'p', 'c'}, f"Expected {{'p', 'c'}}, got {set(result)}"
+
+    # A c B, B c C => A can be p or c
+    result = compose_relation('c', 'c')
+    assert set(result) == {'p', 'c'}, f"Expected {{'p', 'c'}}, got {set(result)}"
+
+
+def test_2_relations_apply_patterns():
+    """
+    Test applying discovered 2-relation patterns.
+    """
+    p1 = [(0, 1, "A"), (2, 3, "B")]  # A < B -> p
+    p2 = [(0, 3, "A"), (1, 2, "B")]  # A c B -> c
+    entities = [p1, p2]
+    patient_ids = ["p1", "p2"]
+
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/2, num_relations=2)
+    df, tirps = kl.discover_patterns(entities, min_length=2, return_tirps=True)
+
+    applied = kl.apply_patterns_to_entities(
+        entities, df, patient_ids, mode="tirp-count", count_strategy="unique_last"
+    )
+
+    # Both patterns should have vertical support 1/2
+    assert any(t.vertical_support == 1/2 for t in tirps), "Should find patterns with vertical support 1/2"
+
+# ============================================================================
 # TESTS FOR 3-RELATION TABLE (Minimal: before, overlaps, contains)
 # ============================================================================
 
@@ -439,6 +516,11 @@ def test_num_relations_switching():
     """
     from core.relation_table import get_num_relations
     
+    # Create with 2 relations
+    kl2 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=0.5, num_relations=2)
+    assert kl2.num_relations == 2
+    assert get_num_relations() == 2
+
     # Create with 3 relations
     kl3 = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=0.5, num_relations=3)
     assert kl3.num_relations == 3
@@ -501,7 +583,7 @@ def test_3_vs_5_vs_7_relations_pattern_discovery():
     assert patterns7 >= patterns5, "7-relation should find >= patterns as 5-relation"
 
 
-@pytest.mark.parametrize("num_relations", [3, 5, 7])
+@pytest.mark.parametrize("num_relations", [2, 3, 5, 7])
 def test_each_relation_emitted_separately(num_relations):
     """
     Test that each relation in the table is properly emitted when present in the data.
@@ -510,6 +592,7 @@ def test_each_relation_emitted_separately(num_relations):
     """
     # Define which relations are in each table
     relations_per_table = {
+        2: ['p', 'c'],
         3: ['<', 'o', 'c'],
         5: ['<', 'o', 'c', 'f', 's'],
         7: ['<', 'm', 'o', 'c', 'f', 's', '=']
@@ -517,10 +600,11 @@ def test_each_relation_emitted_separately(num_relations):
     
     # Example interval pairs for each relation
     relation_examples = {
+        'p': [(0, 1, "A"), (2, 3, "B")],  # A before B -> p
+        'c': [(0, 3, "A"), (1, 2, "B")],  # A contains B -> c
         '<': [(0, 1, "A"), (2, 3, "B")],  # A before B
         'm': [(0, 1, "A"), (1, 2, "B")],  # A meets B
         'o': [(0, 2, "A"), (1, 3, "B")],  # A overlaps B
-        'c': [(0, 3, "A"), (1, 2, "B")],  # A contains B
         'f': [(0, 2, "A"), (1, 2, "B")],  # A finished-by B
         's': [(0, 2, "A"), (0, 1, "B")],  # A started-by B
         '=': [(0, 1, "A"), (0, 1, "B")]   # A equal B

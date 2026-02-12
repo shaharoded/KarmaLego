@@ -41,7 +41,14 @@ This structure enables efficient discovery of high-order, temporally consistent 
 
 ## Temporal Relations
 
-KarmaLego supports three levels of temporal relation granularity: 3, 5, and 7 relations. Each level coarsens the full 7-relation Allen algebra for performance. Relations are defined between interval pairs (A, B) using start and end times.
+KarmaLego supports four levels of temporal relation granularity: 2, 3, 5, and 7 relations. Each level coarsens the full 7-relation Allen algebra for performance. Relations are defined between interval pairs (A, B) using start and end times.
+
+### 2 Relations (Ultra-coarse)
+
+| Relation | Explanation |
+|----------|-------------|
+| 'p' | Proceed: merges before/meet/overlap (A < B, A m B, A o B) |
+| 'c' | Contain: merges contain/started-by/finished-by/equal (A c B, A s B, A f B, A = B) |
 
 ### 3 Relations (Minimal)
 
@@ -355,13 +362,13 @@ pd.DataFrame(rows).to_csv("data/patient_pattern_vectors.ALL.csv", index=False)
 Run the full test suite:
 
 ```bash
-pytest -q -s
+python -m pytest unittests -q -s
 ```
 
 Run a single test file:
 
 ```bash
-pytest unittests/test_tirp.py -q -s
+python -m pytest unittests/test_tirp.py -q -s
 ```
 
 The `-s` flag shows pattern printouts and progress bars for debugging.

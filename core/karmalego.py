@@ -560,7 +560,8 @@ class KarmaLego:
         min_ver_supp : float
             Minimum vertical support threshold for a pattern to be kept.
         num_relations : int, default=7
-            Number of temporal relations to support: 3, 5, or 7.
+            Number of temporal relations to support: 2, 3, 5, or 7.
+            - 2: ultra-coarse (proceed/contain) - fastest
             - 3: minimal - fastest
             - 5: intermediate - balanced
             - 7: full Allen forward relations - most detailed
@@ -569,7 +570,7 @@ class KarmaLego:
         Raises
         ------
         ValueError
-            If num_relations is not 3, 5, or 7.
+            If num_relations is not 2, 3, 5, or 7.
         """
         self.epsilon = normalize_time_param(epsilon)
         self.max_distance = normalize_time_param(max_distance)
@@ -625,13 +626,13 @@ class KarmaLego:
 
         # Karma phase: requires precomputed passed in
         t_karma_start = time.perf_counter()
-        karma = Karma(self.epsilon, self.max_distance, self.min_ver_supp)
+        karma = Karma(self.epsilon, self.max_distance, self.min_ver_supp, num_relations=self.num_relations)
         tree = karma.run_karma(entity_list, precomputed)
         t_karma_end = time.perf_counter()
 
         # Lego extension
         t_lego_start = time.perf_counter()
-        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True)
+        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True, num_relations=self.num_relations)
         full_tree = lego.run_lego(tree, entity_list, precomputed, max_length=max_length)
         t_lego_end = time.perf_counter()
 
@@ -890,8 +891,8 @@ class KarmaLego:
     
 
 class Karma(KarmaLego):
-    def __init__(self, epsilon, max_distance, min_ver_supp):
-        super().__init__(epsilon, max_distance, min_ver_supp)
+    def __init__(self, epsilon, max_distance, min_ver_supp, num_relations=7):
+        super().__init__(epsilon, max_distance, min_ver_supp, num_relations=num_relations)
 
     def run_karma(self, entity_list, precomputed):
         """
@@ -1041,9 +1042,9 @@ class Lego(KarmaLego):
     show_detail :
         Whether to show per-TIRP extension progress bars.
     """
-    def __init__(self, tree, epsilon, max_distance, min_ver_supp, show_detail):
+    def __init__(self, tree, epsilon, max_distance, min_ver_supp, show_detail, num_relations=7):
         self.tree = tree
-        super().__init__(epsilon, max_distance, min_ver_supp)
+        super().__init__(epsilon, max_distance, min_ver_supp, num_relations=num_relations)
         self.show_detail = show_detail # whether to keep per-extension verbosity
 
     def run_lego(self, node, entity_list, precomputed, max_length):

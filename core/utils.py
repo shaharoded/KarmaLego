@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from core.relation_table import compose_relation
+from core.relation_table import compose_relation, get_num_relations
 
 
 def normalize_time_param(x):
@@ -32,6 +32,35 @@ def lexicographic_sorting(entity):
     return sorted(entity, key=lambda x: (x[0], -x[1], x[2]))
 
 
+def _map_relation_to_active(rel):
+    """
+    Map a 7-relation symbol to the active relation alphabet (2, 3, 5, or 7).
+    """
+    if rel is None:
+        return None
+
+    num_relations = get_num_relations()
+    if num_relations == 7:
+        return rel
+    if num_relations == 5:
+        if rel == "m":
+            return "<"
+        if rel == "=":
+            return "c"
+        return rel
+    if num_relations == 3:
+        if rel in ("<", "m"):
+            return "<"
+        if rel in ("c", "s", "f", "="):
+            return "c"
+        return "o"
+    if num_relations == 2:
+        if rel in ("<", "m", "o"):
+            return "p"
+        return "c"
+    return rel
+
+
 def temporal_relations(ti_1, ti_2, epsilon, max_distance):
     """
     Determine the Allen-like relation from interval ti_1 to ti_2 among the seven supported:
@@ -54,31 +83,31 @@ def temporal_relations(ti_1, ti_2, epsilon, max_distance):
 
     # equal (within epsilon)
     if abs(start1 - start2) <= epsilon and abs(end1 - end2) <= epsilon:
-        return "="
+        return _map_relation_to_active("=")
 
     # before (strictly before, with epsilon tolerance)
     if end1 + epsilon < start2:
-        return "<"
+        return _map_relation_to_active("<")
 
     # meets (end1 ~ start2)
     if abs(end1 - start2) <= epsilon:
-        return "m"
+        return _map_relation_to_active("m")
 
     # overlaps: start1 < start2 < end1 < end2
     if start1 < start2 < end1 < end2:
-        return "o"
+        return _map_relation_to_active("o")
 
     # finished-by: ti_1 is finished-by ti_2 -> start1 < start2 and end1 ~ end2
     if start1 < start2 and abs(end1 - end2) <= epsilon:
-        return "f"
+        return _map_relation_to_active("f")
 
     # contains: ti_1 strictly contains ti_2 (allowing some epsilon leeway if needed)
     if start1 < start2 and end1 > end2:
-        return "c"
+        return _map_relation_to_active("c")
 
     # start-by: ti_1 is started-by ti_2 -> start1 ~ start2 and end1 > end2
     if abs(start1 - start2) <= epsilon and end1 > end2:
-        return "s"
+        return _map_relation_to_active("s")
 
     return None
     
