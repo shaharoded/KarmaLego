@@ -647,6 +647,14 @@ class KarmaLego:
         if max_length is not None:
             filtered = [t for t in filtered if t.k <= max_length]
 
+        # If caller doesn't need the tree, clear cached subtree lists to reduce memory.
+        if not return_tree:
+            stack = [full_tree]
+            while stack:
+                node = stack.pop()
+                node._cached_subtree_nodes = None
+                stack.extend(node.children)
+
         # Support set comparison for closed/super flags
         support_sets = [set(t.entity_indices_supporting) for t in filtered]
         ks = [t.k for t in filtered]
