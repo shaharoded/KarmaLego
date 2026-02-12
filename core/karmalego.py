@@ -562,7 +562,7 @@ class KarmaLego:
         num_relations : int, default=7
             Number of temporal relations to support: 2, 3, 5, or 7.
             - 2: ultra-coarse (proceed/contain) - fastest
-            - 3: minimal - fastest
+            - 3: minimal - fast
             - 5: intermediate - balanced
             - 7: full Allen forward relations - most detailed
             NOTE: Full relations documentation is in core/relation_table.py
@@ -667,7 +667,7 @@ class KarmaLego:
                 "relations": tuple(tirp.relations),
                 "k": tirp.k,
                 "vertical_support": tirp.vertical_support,
-                "tirp_obj": tirp,
+                "tirp_obj": tirp if return_tirps or return_tree else None, # Condition the return of the TIRP object on the flags to avoid unnecessary memory usage
                 "tirp_str": decode_pattern(tirp, inverse_symbol_map),
                 "is_closed": is_closed[idx],
                 "is_super_pattern": is_super[idx],
@@ -742,7 +742,31 @@ class KarmaLego:
         if hasattr(patterns, "itertuples") or isinstance(patterns, pd.DataFrame):
             cols = set(patterns.columns)
             if "tirp_obj" in cols:
-                patterns_list = list(patterns["tirp_obj"])
+                # Reconstruct TIRPs from 'tirp_obj' column if present (preferred for direct DataFrame output from discover_patterns)
+                tirp_objs = list(patterns["tirp_obj"])
+                if any(t is not None for t in tirp_objs):
+                    patterns_list = [t for t in tirp_objs if t is not None]
+                elif {"symbols", "relations"}.issubset(cols):
+                    patterns_list = []
+                    for row in patterns.itertuples(index=False):
+                        syms = row.symbols
+                        rels = row.relations
+                        if isinstance(syms, str):
+                            syms = literal_eval(syms)  # e.g., "(1, 3, 2)" -> (1,3,2)
+                        if isinstance(rels, str):
+                            rels = literal_eval(rels)  # e.g., "('<','<')" -> ('<','<')
+                        patterns_list.append(
+                            TIRP(
+                                epsilon=self.epsilon,
+                                max_distance=self.max_distance,
+                                min_ver_supp=self.min_ver_supp,
+                                symbols=list(syms),
+                                relations=list(rels),
+                                k=len(syms),
+                            )
+                        )
+                else:
+                    raise ValueError("DataFrame must contain either 'tirp_obj' or both 'symbols' and 'relations'.")
             elif {"symbols", "relations"}.issubset(cols):
                 # Reconstruct TIRPs from CSV-friendly columns
                 patterns_list = []
@@ -1079,10 +1103,14 @@ class Lego(KarmaLego):
                 if isinstance(current.data, TIRP):
                     # Stop extending if we reached max_length
                     if max_length is not None and current.data.k >= max_length:
+                        # No further use for embeddings at this node
+                        current.data.embeddings_map = None
                         continue
                     # Skip extending singletons: Karma already created all k=2 patterns.
                     if current.data.k == 1:
                         extensions = []
+                        # No further use for embeddings at this node
+                        current.data.embeddings_map = None
                     else:
                         extensions = self.all_extensions(entity_list, current.data, precomputed)
                     ok = []
@@ -1092,10 +1120,9 @@ class Lego(KarmaLego):
                     for ext in iterator:
                         if ext.is_above_vertical_support(entity_list, precomputed=precomputed):
                             ok.append(ext)
-                    
-                    # If this node cannot be extended, free its stored embeddings to save memory.
-                    if not ok and isinstance(current.data, TIRP):
-                        current.data.embeddings_map = None
+
+                    # After extensions are generated, embeddings are no longer needed for this node.
+                    current.data.embeddings_map = None
                     
                     for ext in ok:
                         child = TreeNode(ext)
