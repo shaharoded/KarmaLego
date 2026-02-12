@@ -115,10 +115,18 @@ Support checks for a child TIRP are restricted to the entities that supported it
 5. **Skip duplicate pair generation:**
 Pairs (k=2) are produced once in Karma and not re-generated in Lego. This eliminates ~×2 duplication for pairs and can reduce Lego runtime dramatically.
 
-6. **Precomputed per-entity views (reused everywhere):**
+6. **One-pass Karma with eager embedding materialization:**
+   The Karma phase uses a **single pass** through entity pairs to both count support AND materialize embeddings (`embeddings_map`) simultaneously. An alternative two-pass approach (first count support, then materialize embeddings only for frequent pairs) would reduce memory during Karma but **doubles the I/O cost** and adds bookkeeping complexity.
+   
+   **Trade-off rationale:**
+   - **Single-pass (current):** Simpler, faster overall, but materializes embeddings for all candidate pairs (including infrequent ones that get discarded).
+   - **Two-pass alternative:** Lower peak RAM during Karma, but requires scanning all pairs twice. The overhead typically exceeds savings unless `min_ver_supp` is extremely low (<0.01).
+   - **Why single-pass wins:** Karma pairs are small (k=2); the real memory bottleneck is the Lego phase with deep patterns. Optimizing Lego embedding cleanup (see CSAC memory hygiene) yields better ROI.
+
+7. **Precomputed per-entity views (reused everywhere):**
 Lexicographic sorting and symbol→positions maps are built once and reused in support checks and extension, avoiding repeat work.
 
-7. **Integer time arithmetic:**
+8. **Integer time arithmetic:**
 Timestamps are held as `int64`; relation checks use pure integer math. If source data were datetimes, they are converted to ns; if they were numeric, they remain your unit.
 
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
