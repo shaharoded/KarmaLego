@@ -534,9 +534,11 @@ class TIRP:
                 if self.embeddings_map is None:
                     self.embeddings_map = {}
                 
-                # Deduplicate and store
-                seen = set(tuple(t) for t in valid_embeddings_here)
-                self.embeddings_map[orig_idx] = sorted(seen)
+                # Store embeddings — valid_embeddings_here contains unique tuples by
+                # construction (guided path: distinct parent_tup × unique target positions;
+                # full-search path: check_symbols_lexicographically returns strictly
+                # increasing index sequences). No set deduplication needed.
+                self.embeddings_map[orig_idx] = sorted(valid_embeddings_here)
 
             # Early-abandon: upper bound on achievable support.
             # Even if every remaining entity supports this TIRP, can we reach the threshold?
