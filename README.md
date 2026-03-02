@@ -162,6 +162,14 @@ Lexicographic sorting and symbol→positions maps are built once and reused in s
 9. **Integer time arithmetic:**
 Timestamps are held as `int64`; relation checks use pure integer math. If source data were datetimes, they are converted to ns; if they were numeric, they remain your unit.
 
+10. **Depth-first (DFS) Lego traversal for lower peak memory:**
+
+    The Lego extension phase uses recursive DFS rather than a BFS queue. Under BFS, all k=n patterns with their `embeddings_map` dicts live in memory simultaneously before any k=n+1 work begins; on datasets with wide pattern trees this can become several times the working set size of a single depth level.
+
+    With DFS, a pattern's `embeddings_map` is freed immediately after its children have consumed it (each child calls `is_above_vertical_support`, which reads from `parent_embeddings_map`, then clears it). At any moment, only the embeddings along **one active root-to-leaf path** are retained — plus the k=2 embeddings of siblings not yet visited. Peak memory scales with depth × branching-factor-per-node rather than total nodes per level.
+
+    A secondary benefit is reduced Python GC pressure: fewer large dicts stay alive simultaneously, so garbage collection cycles are less frequent and cheaper. On large runs this has a measurable wall-clock effect even before any memory limit is approached.
+
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
 
 **Performance Notes:**
@@ -174,7 +182,7 @@ These optimizations ensure that KarmaLego runs efficiently on large temporal dat
   - Using `min_ver_supp` and `max_k` to control pattern explosion.
   - Persisting symbol maps to ensure consistent encoding across runs.
 - No k=1→k=2 in Lego: pairs are already created in Karma; Lego starts from k≥2. This removes structural duplicates and their support checks.
-- CSAC memory hygiene: parent embedding state is released after each support check; leaf nodes release their own embedding maps, keeping peak RAM lower on large runs.
+- DFS memory hygiene: each node's `embeddings_map` is released immediately after all its extensions have been checked for support, before recursing into children. Only the embeddings along the current active path remain live at any point, keeping peak RAM proportional to pattern depth rather than pattern breadth.
 
 ---
 

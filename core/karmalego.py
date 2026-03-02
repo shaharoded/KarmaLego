@@ -1,7 +1,7 @@
 import bisect
 import logging
 from functools import wraps
-from collections import defaultdict, deque
+from collections import defaultdict
 from tqdm import tqdm
 import pandas as pd
 import time
@@ -1317,10 +1317,12 @@ class Lego(KarmaLego):
 
     def run_lego(self, node, entity_list, precomputed, max_length):
         """
-        Extend base patterns recursively to higher-order TIRPs.
+        Extend base patterns recursively to higher-order TIRPs using depth-first search.
 
-        Breadth-first traverses the tree, attempting all valid one-symbol extensions and
-        attaching those meeting vertical support.
+        DFS is preferred over BFS because each branch's embeddings_map is freed as soon
+        as its subtree is exhausted, keeping peak memory proportional to the depth of one
+        active path rather than the width of an entire BFS level.  This also reduces
+        Python GC pressure on large runs.
 
         Parameters
         ----------
@@ -1328,58 +1330,55 @@ class Lego(KarmaLego):
             Root TreeNode to start extension from.
         entity_list :
             List of entities for support computation.
-        precomputed:   
-            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals).
-        max_length : int, optional (assigned int or None by KarmaLego.discover_patterns)
-            Maximum pattern length (k) to extend to. If None, no limit.
+        precomputed :
+            List of dicts per entity with keys 'sorted' and 'symbol_index'.
+        max_length : int or None
+            Maximum pattern length (k) to extend to. None means no limit.
 
         Returns
         -------
         TreeNode
             The same tree with extended TIRPs grafted in.
         """
-        # Breadth-first expansion queue
-        queue = deque([node])
-        queued = {id(node)}  # track enqueued nodes by identity to avoid O(n) deque membership test
         with tqdm(desc="Lego phase (nodes expanded)", unit=" node/s") as bar:
-            while queue:
-                current = queue.popleft()
-                if isinstance(current.data, TIRP):
-                    # Stop extending if we reached max_length
-                    if max_length is not None and current.data.k >= max_length:
-                        # No further use for embeddings at this node
-                        current.data.embeddings_map = None
-                        continue
-                    # Skip extending singletons: Karma already created all k=2 patterns.
-                    if current.data.k == 1:
-                        extensions = []
-                        # No further use for embeddings at this node
-                        current.data.embeddings_map = None
-                    else:
-                        extensions = self.all_extensions(entity_list, current.data, precomputed)
-                    ok = []
-                    iterator = extensions
-                    if self.show_detail:
-                        iterator = tqdm(extensions, desc=f"Extending TIRP k={current.data.k}", leave=False)
-                    for ext in iterator:
-                        if ext.is_above_vertical_support(entity_list, precomputed=precomputed,
-                                                         level2_index=self.level2_index):
-                            ok.append(ext)
+            def _dfs(current):
+                if not isinstance(current.data, TIRP):
+                    # Tree root (non-TIRP): descend into singleton children.
+                    for child in current.children:
+                        _dfs(child)
+                    return
 
-                    # After extensions are generated, embeddings are no longer needed for this node.
-                    current.data.embeddings_map = None
+                tirp = current.data
+                bar.update(1)
+
+                if max_length is not None and tirp.k >= max_length:
+                    tirp.embeddings_map = None
+                    return
+
+                if tirp.k == 1:
+                    # Singletons are not extended here — Karma already built all k=2 pairs.
+                    tirp.embeddings_map = None
+                    for child in current.children:
+                        _dfs(child)
+                else:
+                    # Generate candidate extensions and filter by support.
+                    extensions = self.all_extensions(entity_list, tirp, precomputed)
+                    iterator = (tqdm(extensions, desc=f"Extending TIRP k={tirp.k}", leave=False)
+                                if self.show_detail else extensions)
+                    ok = [ext for ext in iterator
+                          if ext.is_above_vertical_support(entity_list, precomputed=precomputed,
+                                                           level2_index=self.level2_index)]
+
+                    # All children have consumed parent embeddings via is_above_vertical_support;
+                    # free the parent's embeddings_map before descending into children.
+                    tirp.embeddings_map = None
 
                     for ext in ok:
                         child = TreeNode(ext)
                         current.add_child(child)
-                        queued.add(id(child))
-                        queue.append(child)
-                # Also enqueue pre-existing children (e.g. k=2 pairs attached by Karma under k=1 singletons).
-                for child in current.children:
-                    if id(child) not in queued:
-                        queued.add(id(child))
-                        queue.append(child)
-                bar.update(1)
+                        _dfs(child)
+
+            _dfs(node)
         return node
 
     def all_extensions(self, entity_list, tirp, precomputed):
