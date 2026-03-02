@@ -1,6 +1,6 @@
 import logging
 from functools import wraps
-from collections import defaultdict
+from collections import defaultdict, deque
 from tqdm import tqdm
 import pandas as pd
 import time
@@ -1107,10 +1107,10 @@ class Lego(KarmaLego):
             The same tree with extended TIRPs grafted in.
         """
         # Breadth-first expansion queue
-        queue = [node]
+        queue = deque([node])
         with tqdm(desc="Lego phase (nodes expanded)", unit=" node/s") as bar:
             while queue:
-                current = queue.pop(0)
+                current = queue.popleft()
                 if isinstance(current.data, TIRP):
                     # Stop extending if we reached max_length
                     if max_length is not None and current.data.k >= max_length:
