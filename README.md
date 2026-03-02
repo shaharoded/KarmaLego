@@ -126,7 +126,29 @@ Support checks for a child TIRP are restricted to the entities that supported it
 5. **Skip duplicate pair generation:**
 Pairs (k=2) are produced once in Karma and not re-generated in Lego. This eliminates ~×2 duplication for pairs and can reduce Lego runtime dramatically.
 
-6. **One-pass Karma with eager embedding materialization:**
+6. **Level-2 index for O(1) last-pair lookup during Lego extension:**
+
+   After Karma finishes, a *level-2 index* is built from the frequent k=2 TIRP embeddings:
+
+   ```
+   (sym_A, sym_B, rel) → { eid → { pos_A → [pos_B, ...] } }
+   ```
+
+   During Lego extension of a k-length TIRP to k+1, the bottleneck step is finding all positions of the new symbol that have the *correct relation to the last parent position* (sym[-2] → sym[-1], same entity). Without the index this requires a bisect scan over all positions of that symbol, followed by a `pairwise_rels` look-up per candidate.  
+   With the index, the lookup is:
+
+   ```python
+   candidates = level2_index[(sym_A, sym_B, rel)][eid].get(parent_last_pos, ())
+   ```
+
+   — a dict look-up that returns only pre-verified candidates in **O(1)**, with no failed bisect steps.
+
+   **Interaction with CSAC:**  
+   The k=2 embeddings stored in the index were already CSAC-filtered during Karma (the adjacency / interposer check was applied before each embedding was stored). Therefore, for any candidate retrieved from the index, the last pair's relation *and* CSAC constraint are already guaranteed. Only the relations from earlier parent positions to the new position still need to be verified. This saves one extra relation look-up *and* one CSAC adjacency scan per candidate, compounding across all entities at every Lego extension step.
+
+   > **Fallback:** `is_above_vertical_support` with `parent_embeddings_map` set always requires a `level2_index` (asserted at entry). If an entity has no index entry for a given `(sym_A, sym_B, rel)` key — meaning Karma found no CSAC-valid pair for it — the entity is skipped immediately via `continue` rather than scanning. Any candidate a bisect scan could produce would fail the same relation or CSAC check that excluded it from the index, so the skip is safe and avoids entering the parent-embedding loop entirely.
+
+7. **One-pass Karma with eager embedding materialization:**
    The Karma phase uses a **single pass** through entity pairs to both count support AND materialize embeddings (`embeddings_map`) simultaneously. An alternative two-pass approach (first count support, then materialize embeddings only for frequent pairs) would reduce memory during Karma but **doubles the I/O cost** and adds bookkeeping complexity.
    
    **Trade-off rationale:**
@@ -134,10 +156,10 @@ Pairs (k=2) are produced once in Karma and not re-generated in Lego. This elimin
    - **Two-pass alternative:** Lower peak RAM during Karma, but requires scanning all pairs twice. The overhead typically exceeds savings unless `min_ver_supp` is extremely low (<0.01).
    - **Why single-pass wins:** Karma pairs are small (k=2); the real memory bottleneck is the Lego phase with deep patterns. Optimizing Lego embedding cleanup (see CSAC memory hygiene) yields better ROI.
 
-7. **Precomputed per-entity views (reused everywhere):**
+8. **Precomputed per-entity views (reused everywhere):**
 Lexicographic sorting and symbol→positions maps are built once and reused in support checks and extension, avoiding repeat work.
 
-8. **Integer time arithmetic:**
+9. **Integer time arithmetic:**
 Timestamps are held as `int64`; relation checks use pure integer math. If source data were datetimes, they are converted to ns; if they were numeric, they remain your unit.
 
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.

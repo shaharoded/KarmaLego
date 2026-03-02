@@ -444,17 +444,26 @@ class TIRP:
         _ge_target_symbol = None      # new symbol being appended
         _ge_rels_to_check = None      # relations from all k-1 prev positions to the new symbol
         _ge_l2_eid_map    = None      # {eid: {pos_A → [pos_B, ...]}} for the direct last pair
-        _ge_check_count   = None      # relation/CSAC checks when index path is used (len-1)
+        _ge_check_count   = None      # relations to verify per candidate (one less than total;
+                                      # the last pair is always pre-verified by the index)
         if use_guided_extension:
+            assert level2_index is not None, (
+                "level2_index must be provided when parent_embeddings_map is set; "
+                "call discover_patterns rather than is_above_vertical_support directly "
+                "on guided-extension TIRPs."
+            )
             _ge_target_symbol = self.symbols[-1]
             _ge_rels_to_check = self.relations[-(self.k - 1):]
-            if level2_index is not None and _ge_rels_to_check:
-                l2_key = (self.symbols[-2], _ge_target_symbol, _ge_rels_to_check[-1])
-                _ge_l2_eid_map = level2_index.get(l2_key)
-            # NOTE: eff_check_count is computed per-entity below, because l2_pos_dict may be
-            # None for some entities even when _ge_l2_eid_map is not None (entity not in the
-            # k=2 index).  _ge_check_count is only the optimised count for the index path.
-            _ge_check_count = len(_ge_rels_to_check) - (1 if _ge_l2_eid_map is not None else 0)
+            l2_key = (self.symbols[-2], _ge_target_symbol, _ge_rels_to_check[-1])
+            _ge_l2_eid_map = level2_index.get(l2_key)
+            if _ge_l2_eid_map is None:
+                # The k=2 sub-pattern (sym[-2], sym[-1], last_rel) is absent from the index,
+                # meaning it was not frequent.  By Apriori this TIRP cannot be frequent either.
+                # This branch is unreachable in a correctly-pruned Lego traversal.
+                self.vertical_support = 0.0
+                self.parent_embeddings_map = None
+                return False
+            _ge_check_count = len(_ge_rels_to_check) - 1  # last pair always pre-verified
 
         for check_pos, orig_idx in enumerate(indices_to_check):
             # Get the entity data
@@ -470,9 +479,7 @@ class TIRP:
             
             valid_embeddings_here = []
 
-            # Pre-extract symbol_index once; needed by both CSAC checks below.
-            # When precomputed is unavailable (standalone / unit-test usage), build it
-            # from entity_symbols so CSAC adjacency checks always have a valid index.
+            # Pre-extract symbol_index once; used by CSAC adjacency checks in both paths below.
             if precomputed is not None:
                 symbol_index = precomputed[orig_idx]["symbol_index"]
             else:
@@ -489,32 +496,25 @@ class TIRP:
                 parent_embeddings = self.parent_embeddings_map.get(orig_idx, [])
 
                 # Per-entity view of the level-2 index: pos_A → [pos_B, ...].
-                # When present, candidates_i is pulled directly from the index — pairs
-                # are already relation-verified and CSAC-compliant from Karma, so we
-                # skip the last relation check and the last CSAC check for every candidate.
-                l2_pos_dict = _ge_l2_eid_map.get(orig_idx) if _ge_l2_eid_map is not None else None
-                # Bisect-based list used as fallback when the level2_index is absent.
-                target_positions = symbol_index.get(target_symbol, [])
+                # Candidates pulled from here are already relation-verified and CSAC-compliant
+                # (filtered during Karma), so we skip the last relation and CSAC check.
+                l2_pos_dict = _ge_l2_eid_map.get(orig_idx)
+                if l2_pos_dict is None:
+                    # This entity has no CSAC-valid (sym_A, sym_B, last_rel) pair from Karma;
+                    # no embedding can be formed for it.
+                    continue
 
                 for parent_tup in parent_embeddings:
                     parent_last_idx = parent_tup[-1]
-                    if l2_pos_dict is not None:
-                        # O(1) grouped lookup: all pre-verified pos_B values for this pos_A.
-                        candidates_i = l2_pos_dict.get(parent_last_idx, ())
-                        # Last pair pre-verified by the index → skip its relation/CSAC check.
-                        eff_check_count = check_count
-                    else:
-                        lo = bisect.bisect_right(target_positions, parent_last_idx)
-                        candidates_i = target_positions[lo:]
-                        # No index for this entity → must verify all relations explicitly.
-                        eff_check_count = len(rels_to_check)
+                    # O(1) lookup: only pre-verified pos_B values for this pos_A.
+                    candidates_i = l2_pos_dict.get(parent_last_idx, ())
 
                     for i in candidates_i:
                         # Verify relations from each earlier parent position to new position i.
-                        # eff_check_count == len(rels_to_check) - 1 when the level2_index
-                        # provided candidates (last pair pre-verified); full length otherwise.
+                        # check_count == len(rels_to_check) - 1: the last pair (sym[-2]→sym[-1])
+                        # is already verified by the index; only the j earlier pairs remain.
                         all_relations_match = True
-                        for j in range(eff_check_count):
+                        for j in range(check_count):
                             prev_entity_idx = parent_tup[j]
                             expected_rel    = rels_to_check[j]
                             actual_rel = (pairwise_rels.get((prev_entity_idx, i))
@@ -526,11 +526,10 @@ class TIRP:
                                 break
 
                         if all_relations_match:
-                            # CSAC: only check pairs covered by eff_check_count.
-                            # The last-pair CSAC is already guaranteed by the level2_index
-                            # (applied during Karma when building the k=2 embeddings).
+                            # CSAC: check the earlier pairs (same count as relation checks).
+                            # The last-pair adjacency is already guaranteed by the index.
                             sac_ok = True
-                            for j in range(eff_check_count):
+                            for j in range(check_count):
                                 if rels_to_check[j] in _sac_rels:
                                     prev_e_idx = parent_tup[j]
                                     sym_prev = lexi_sorted[prev_e_idx][2]
