@@ -679,13 +679,13 @@ class KarmaLego:
         # Karma phase: requires precomputed passed in
         t_karma_start = time.perf_counter()
         karma = Karma(self.epsilon, self.max_distance, self.min_ver_supp, num_relations=self.num_relations)
-        tree = karma.run_karma(entity_list, precomputed)
+        tree, frequent_symbols = karma.run_karma(entity_list, precomputed)
         t_karma_end = time.perf_counter()
 
         # Lego extension
-        # NOTE: symbol_index is kept in precomputed so Lego can use it for fast interval lookup.
+        # Symbol_index is kept in precomputed so Lego can use it for fast interval lookup.
         t_lego_start = time.perf_counter()
-        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True, num_relations=self.num_relations)
+        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True, num_relations=self.num_relations, frequent_symbols=frequent_symbols)
         full_tree = lego.run_lego(tree, entity_list, precomputed, max_length=max_length)
         t_lego_end = time.perf_counter()
 
@@ -999,8 +999,10 @@ class Karma(KarmaLego):
 
         Returns
         -------
-        TreeNode
-            Root node whose children are singleton TIRPs, with length-2 TIRPs attached as appropriate.
+        tuple[TreeNode, set]
+            ``(tree, frequent_symbols)`` where *tree* is the root node whose children are singleton
+            TIRPs with length-2 TIRPs attached, and *frequent_symbols* is the set of symbols that
+            met ``min_ver_supp`` and can safely be used as a whitelist during Lego extension.
         """
         tree = TreeNode("root")
         frequent_symbols = set()
@@ -1113,7 +1115,7 @@ class Karma(KarmaLego):
                     if parent_node is not None:
                         parent_node.add_child(TreeNode(tirp))
 
-        return tree
+        return tree, frequent_symbols
 
 
 class Lego(KarmaLego):
@@ -1126,11 +1128,19 @@ class Lego(KarmaLego):
         Pattern tree produced by Karma.
     show_detail :
         Whether to show per-TIRP extension progress bars.
+    frequent_symbols : set, optional
+        Set of symbols that met ``min_ver_supp`` during the Karma phase, returned as the
+        second element of ``run_karma``'s tuple. Used as a whitelist in ``all_extensions``
+        to skip symbols that can never meet the support threshold, reducing branching.
+        If ``None`` (default), no filtering is applied — safe for standalone Lego use.
     """
-    def __init__(self, tree, epsilon, max_distance, min_ver_supp, show_detail, num_relations=7):
+    def __init__(self, tree, epsilon, max_distance, min_ver_supp, show_detail, num_relations=7, frequent_symbols=None):
         self.tree = tree
         super().__init__(epsilon, max_distance, min_ver_supp, num_relations=num_relations)
-        self.show_detail = show_detail # whether to keep per-extension verbosity
+        self.show_detail = show_detail  # whether to keep per-extension verbosity
+        # Whitelist of globally frequent symbols from the Karma phase.
+        # None means no filtering (safe fallback if called without Karma output).
+        self.frequent_symbols = frequent_symbols
 
     def run_lego(self, node, entity_list, precomputed, max_length):
         """
@@ -1254,6 +1264,9 @@ class Lego(KarmaLego):
             # Since lexi_entity is sorted by start time, we also get an early-exit when
             # max_distance is exceeded for the remaining positions of a given symbol.
             for new_symbol, positions in entity_symbol_index.items():
+                # Skip symbols that cannot meet min_ver_supp globally (Karma whitelist).
+                if self.frequent_symbols is not None and new_symbol not in self.frequent_symbols:
+                    continue
                 lo = bisect.bisect_right(positions, sym_index)
                 for after_index in positions[lo:]:
                     new_ti = lexi_entity[after_index][:2]
