@@ -704,21 +704,25 @@ class KarmaLego:
                 node._cached_subtree_nodes = None
                 stack.extend(node.children)
 
-        # Support set comparison for closed/super flags
-        support_sets = [set(t.entity_indices_supporting) for t in filtered]
+        # Support set comparison for closed/super flags — O(P) grouping
+        support_sets = [frozenset(t.entity_indices_supporting) for t in filtered]
         ks = [t.k for t in filtered]
 
-        is_closed = [True] * len(filtered)
-        is_super = [False] * len(filtered)
+        # One pass: compute min_k and max_k per unique support set
+        group: dict = {}
+        for fset, k in zip(support_sets, ks):
+            if fset not in group:
+                group[fset] = [k, k]   # [min_k, max_k]
+            else:
+                if k < group[fset][0]:
+                    group[fset][0] = k
+                if k > group[fset][1]:
+                    group[fset][1] = k
 
-        for i, (supp_i, k_i) in enumerate(zip(support_sets, ks)):
-            for j, (supp_j, k_j) in enumerate(zip(support_sets, ks)):
-                if i != j:
-                    if supp_i == supp_j:
-                        if k_j > k_i:
-                            is_closed[i] = False
-                        if k_j < k_i:
-                            is_super[i] = True
+        # A pattern is closed  iff no longer pattern shares its support  (k == max_k)
+        # A pattern is super   iff a shorter  pattern shares its support  (k >  min_k)
+        is_closed = [group[fset][1] == k for fset, k in zip(support_sets, ks)]
+        is_super  = [group[fset][0] <  k for fset, k in zip(support_sets, ks)]
 
         # Build DataFrame
         records = []
