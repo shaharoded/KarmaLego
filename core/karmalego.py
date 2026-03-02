@@ -1243,7 +1243,15 @@ class Lego(KarmaLego):
                     sources.append((tup[-1], ent_index, tup))
         else:
             raise RuntimeError("Lego extension requires embeddings_map for CSAC; legacy path disabled.")
-        
+
+        # Within a single all_extensions call, tirp.relations / curr_rel_index / decrement_index
+        # are all fixed — only rel_last_new varies. Cache the path-tree result keyed on
+        # rel_last_new so repeated values (common when many source pairs share the same
+        # last relation) pay the backtracking cost only once. At most num_relations entries.
+        _base_rel_index = len(tirp.relations) - 1
+        _base_dec_index = curr_num_of_symbols - 1
+        _paths_cache: dict = {}
+
         for sym_index, ent_index, parent_tuple in sources:
             # Use precomputed sorted entity to avoid re-sorting
             if precomputed is not None:
@@ -1278,14 +1286,12 @@ class Lego(KarmaLego):
                     if rel_last_new is None:
                         continue
 
-                    curr_rel_index = len(tirp.relations) - 1
-                    decrement_index = curr_num_of_symbols - 1
-
                     # get predecessor relation sequences (excluding the new-last relation)
-                    all_paths = []
-                    all_paths = find_all_possible_extensions(
-                        all_paths, [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
-                    )
+                    if rel_last_new not in _paths_cache:
+                        _paths_cache[rel_last_new] = find_all_possible_extensions(
+                            [], [], rel_last_new, _base_rel_index, _base_dec_index, tirp.relations
+                        )
+                    all_paths = _paths_cache[rel_last_new]
 
                     for path in all_paths:
                         new_relations = [rel_last_new, *path]
