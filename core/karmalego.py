@@ -1,3 +1,4 @@
+import bisect
 import logging
 from functools import wraps
 from collections import defaultdict, deque
@@ -630,11 +631,8 @@ class KarmaLego:
         tree = karma.run_karma(entity_list, precomputed)
         t_karma_end = time.perf_counter()
 
-        # symbol_index is only needed for Karma; drop it before Lego to reduce memory
-        for entry in precomputed:
-            entry.pop("symbol_index", None)
-
         # Lego extension
+        # NOTE: symbol_index is kept in precomputed so Lego can use it for fast interval lookup.
         t_lego_start = time.perf_counter()
         lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True, num_relations=self.num_relations)
         full_tree = lego.run_lego(tree, entity_list, precomputed, max_length=max_length)
@@ -1192,51 +1190,65 @@ class Lego(KarmaLego):
 
             if curr_num_of_symbols >= len(lexi_entity):
                 continue
-            
-            for after_sym in lexi_entity[sym_index + 1 :]:
-                *new_ti, new_symbol = after_sym
-                rel_last_new = temporal_relations(
-                    lexi_entity[sym_index][:2], tuple(new_ti), self.epsilon, self.max_distance
-                )
-                if rel_last_new is None:
-                    continue
 
-                curr_rel_index = len(tirp.relations) - 1
-                decrement_index = curr_num_of_symbols - 1
+            ti_last = lexi_entity[sym_index][:2]
+            end_last = ti_last[1]
+            entity_symbol_index = precomputed[ent_index]["symbol_index"]
 
-                # get predecessor relation sequences (excluding the new-last relation)
-                all_paths = []
-                all_paths = find_all_possible_extensions(
-                    all_paths, [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
-                )
+            # Instead of scanning all lexi_entity[sym_index+1:] (O(entity_length)),
+            # iterate per symbol and jump to positions after sym_index via bisect (O(log k + occurrences)).
+            # Since lexi_entity is sorted by start time, we also get an early-exit when
+            # max_distance is exceeded for the remaining positions of a given symbol.
+            for new_symbol, positions in entity_symbol_index.items():
+                lo = bisect.bisect_right(positions, sym_index)
+                for after_index in positions[lo:]:
+                    new_ti = lexi_entity[after_index][:2]
+                    # Early exit: positions are sorted by start time, so once the gap exceeds
+                    # max_distance every subsequent position is also out of range.
+                    if self.max_distance is not None and new_ti[0] - end_last > self.max_distance:
+                        break
+                    rel_last_new = temporal_relations(
+                        ti_last, new_ti, self.epsilon, self.max_distance
+                    )
+                    if rel_last_new is None:
+                        continue
 
-                for path in all_paths:
-                    new_relations = [rel_last_new, *path]
-                    # expected number of new relations when extending by one symbol is current pattern length
-                    if len(new_relations) != curr_num_of_symbols:
-                        # Implementation invariant violated: surface loudly for debugging
-                        raise RuntimeError(
-                            f"Malformed extension candidate: base_k={curr_num_of_symbols}, "
-                            f"computed new_relations={new_relations} (len={len(new_relations)})"
-                        )
+                    curr_rel_index = len(tirp.relations) - 1
+                    decrement_index = curr_num_of_symbols - 1
 
-                    new_relations.reverse()  # match original ordering semantics
-                    signature = (new_symbol, tuple(new_relations)) # Optimization: Check signature
-                    if signature not in candidates:
-                        child = TIRP(
-                            epsilon=self.epsilon,
-                            max_distance=self.max_distance,
-                            min_ver_supp=self.min_ver_supp,
-                            symbols=[*tirp.symbols, new_symbol],
-                            relations=[*tirp.relations, *new_relations],
-                            k=tirp.k + 1,
-                        )
-                        # CSAC propagation
-                        child.parent_entity_indices_supporting = list(tirp.entity_indices_supporting)
-                        child.parent_embeddings_map = tirp.embeddings_map
-                        child.entity_indices_supporting = []
-                        child.indices_of_last_symbol_in_entities = []
-                        candidates[signature] = child
+                    # get predecessor relation sequences (excluding the new-last relation)
+                    all_paths = []
+                    all_paths = find_all_possible_extensions(
+                        all_paths, [], rel_last_new, curr_rel_index, decrement_index, tirp.relations
+                    )
+
+                    for path in all_paths:
+                        new_relations = [rel_last_new, *path]
+                        # expected number of new relations when extending by one symbol is current pattern length
+                        if len(new_relations) != curr_num_of_symbols:
+                            # Implementation invariant violated: surface loudly for debugging
+                            raise RuntimeError(
+                                f"Malformed extension candidate: base_k={curr_num_of_symbols}, "
+                                f"computed new_relations={new_relations} (len={len(new_relations)})"
+                            )
+
+                        new_relations.reverse()  # match original ordering semantics
+                        signature = (new_symbol, tuple(new_relations))  # Optimization: Check signature
+                        if signature not in candidates:
+                            child = TIRP(
+                                epsilon=self.epsilon,
+                                max_distance=self.max_distance,
+                                min_ver_supp=self.min_ver_supp,
+                                symbols=[*tirp.symbols, new_symbol],
+                                relations=[*tirp.relations, *new_relations],
+                                k=tirp.k + 1,
+                            )
+                            # CSAC propagation
+                            child.parent_entity_indices_supporting = list(tirp.entity_indices_supporting)
+                            child.parent_embeddings_map = tirp.embeddings_map
+                            child.entity_indices_supporting = []
+                            child.indices_of_last_symbol_in_entities = []
+                            candidates[signature] = child
         return list(candidates.values())
 
 
