@@ -332,8 +332,9 @@ df_all = run_parallel_jobs(jobs, num_workers=4)
 
 ```python
 # Build all 5 feature columns in one CSV
-rep_to_str = {repr(t): s for t, s in zip(df_patterns["tirp_obj"], df_patterns["tirp_str"])}
-pattern_keys = [repr(t) for t in df_patterns["tirp_obj"]]
+# Keys are (tuple(symbols), tuple(relations)) — stable, cheaper than repr, and correct
+rep_to_str = {(tuple(t.symbols), tuple(t.relations)): s for t, s in zip(df_patterns["tirp_obj"], df_patterns["tirp_str"])}
+pattern_keys = [(tuple(t.symbols), tuple(t.relations)) for t in df_patterns["tirp_obj"]]
 
 vec_count_ul = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
                                              mode="tirp-count", count_strategy="unique_last")

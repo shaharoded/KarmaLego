@@ -806,7 +806,8 @@ class KarmaLego:
         Returns
         -------
         dict
-            patient_id -> {pattern_repr: value}
+            patient_id -> {pattern_key: value}
+            where pattern_key is a tuple (tuple(symbols), tuple(relations)).
         """
         # ---- Normalize patterns container ----
         if hasattr(patterns, "itertuples") or isinstance(patterns, pd.DataFrame):
@@ -864,42 +865,72 @@ class KarmaLego:
         else:
             raise ValueError("Unsupported patterns container")
 
-        # ---- Precompute per-entity views (sorted intervals + symbol list) ----
-        # Reuse your lexicographic policy for consistent indexing
+        # ---- Precompute per-entity views (sorted intervals + symbol list + index) ----
+        # Reuse your lexicographic policy for consistent indexing.
+        # symbol_index maps each symbol -> sorted list of positions; used for O(log n) bisect jumps
+        # instead of a full O(m) linear scan when enumerating subsequence candidates.
         precomp = []
         for ent in entity_list:
             lexi = lexicographic_sorting(ent)
             ti = [(s, e) for s, e, _ in lexi]        # list of (start, end) pairs
             syms = [sym for _, _, sym in lexi]       # parallel list of symbols
-            precomp.append((ti, syms))
+            sym_idx: dict = {}
+            for pos, sym in enumerate(syms):
+                sym_idx.setdefault(sym, []).append(pos)
+            precomp.append((ti, syms, sym_idx))
 
         # ---- Helpers ----
-        def _valid_embeddings_in_entity(tirp, ti, syms):
-            """Return list of index-tuples (embedding positions) that satisfy tirp.symbols & all relations."""
-            if len(tirp.symbols) > len(syms):
+        def _valid_embeddings_in_entity(tirp, ti, syms, sym_idx):
+            """Return list of index-tuples (embedding positions) that satisfy tirp.symbols & all relations.
+
+            Uses bisect jumps through symbol_index to enumerate candidates without scanning the full
+            symbol list linearly.  For an entity with m events and a pattern of length p, worst-case
+            is still O(m^p) but average-case is dramatically smaller when symbols are infrequent.
+            """
+            pat_syms = tirp.symbols
+            n_pat = len(pat_syms)
+            if n_pat > len(syms):
                 return []
-            idx_tuples = check_symbols_lexicographically(syms, tirp.symbols)
-            if not idx_tuples:
-                return []
+            # Early-exit: if any required symbol is missing, skip entirely
+            for sym in pat_syms:
+                if sym not in sym_idx:
+                    return []
+
+            # Iterative DFS using an explicit stack to avoid Python recursion overhead.
+            # Each stack frame: (p_pos, e_min, partial_tuple)
             out = []
-            for tup in idx_tuples:
-                ok = True
-                rel_idx = 0
-                # verify all pairwise relations in upper triangular order
-                for col, ent_idx in enumerate(tup[1:]):
-                    for row in range(col + 1):
-                        i1 = tup[row]
-                        i2 = ent_idx
-                        expected = tirp.relations[rel_idx]
-                        actual = temporal_relations(ti[i1], ti[i2], self.epsilon, self.max_distance)
-                        if expected != actual:
-                            ok = False
-                            break
-                        rel_idx += 1
-                    if not ok:
-                        break
-                if ok:
-                    out.append(tup)
+            relations = tirp.relations
+            epsilon = self.epsilon
+            max_dist = self.max_distance
+            stack = [(0, 0, ())]
+            while stack:
+                p_pos, e_min, partial = stack.pop()
+                sym = pat_syms[p_pos]
+                positions = sym_idx[sym]  # guaranteed present by early-exit above
+                start_i = bisect.bisect_left(positions, e_min)
+                for k in range(start_i, len(positions)):
+                    pos = positions[k]
+                    candidate = partial + (pos,)
+                    if p_pos == n_pat - 1:
+                        # Full candidate tuple: verify all pairwise relations
+                        ok = True
+                        rel_idx = 0
+                        for col, ent_idx in enumerate(candidate[1:]):
+                            for row in range(col + 1):
+                                i1 = candidate[row]
+                                i2 = ent_idx
+                                expected = relations[rel_idx]
+                                actual = temporal_relations(ti[i1], ti[i2], epsilon, max_dist)
+                                if expected != actual:
+                                    ok = False
+                                    break
+                                rel_idx += 1
+                            if not ok:
+                                break
+                        if ok:
+                            out.append(candidate)
+                    else:
+                        stack.append((p_pos + 1, pos + 1, candidate))
             return out
 
         def _horizontal_support_from_embeddings(embeddings):
@@ -939,45 +970,41 @@ class KarmaLego:
             return int(total)
 
         # ---- Pass 1: compute raw values per patient & pattern ----
+        # Key: (tuple(symbols), tuple(relations)) — a stable tuple that is cheaper than repr(tirp)
+        # (no float formatting) and correct (repr used to embed vertical_support, making two
+        # structurally identical patterns from different runs collide or diverge incorrectly).
+        need_norm = mode in ("tpf-dist", "tpf-duration")
         values = {pid: defaultdict(float) for pid in patient_ids}
+        maxs: dict = {}  # per-pattern max seen across all patients; built during Pass 1
         for tirp in tqdm(patterns_list, desc="Applying patterns to entities"):
-            key = repr(tirp)
-            for eid, (ti, syms) in enumerate(precomp):
-                emb = _valid_embeddings_in_entity(tirp, ti, syms)
+            key = (tuple(tirp.symbols), tuple(tirp.relations))
+            for eid, (ti, syms, sym_idx) in enumerate(precomp):
+                emb = _valid_embeddings_in_entity(tirp, ti, syms, sym_idx)
                 if not emb:
                     continue
                 pid = patient_ids[eid]
                 if mode == "tirp-count" or mode == "tpf-dist":
-                    values[pid][key] = _horizontal_support_from_embeddings(emb)
+                    val = _horizontal_support_from_embeddings(emb)
                 elif mode == "tpf-duration":
-                    values[pid][key] = _union_span_from_embeddings(emb, ti)
+                    val = _union_span_from_embeddings(emb, ti)
                 else:
                     raise ValueError("mode must be one of: 'tirp-count', 'tpf-dist', 'tpf-duration'.")
+                values[pid][key] = val
+                if need_norm and val > maxs.get(key, 0):
+                    maxs[key] = val
 
         # ---- Pass 2: normalization for cohort-based modes ----
-        if mode in ("tpf-dist", "tpf-duration"):
-            # Collect pattern keys
-            pattern_keys = set()
-            for v in values.values():
-                pattern_keys.update(v.keys())
-
-            # For each pattern, compute cohort min/max, including zeros for patients without the pattern
-            mins, maxs = {}, {}
-            for pat in pattern_keys:
-                series = []
-                for pid in patient_ids:
-                    series.append(values[pid].get(pat, 0.0))
-                mins[pat] = min(series)
-                maxs[pat] = max(series)
-
-            # Min–max normalize per pattern to [0,1]
+        # Because missing patients are treated as 0, the global min is always 0.
+        # We only need the per-pattern max (already tracked in Pass 1) to normalise to [0,1].
+        # This avoids the O(#patterns × #patients) series-building loop of the naïve approach.
+        if need_norm:
             for pid in patient_ids:
                 if not values[pid]:
                     continue
                 for pat in list(values[pid].keys()):
-                    lo, hi = mins[pat], maxs[pat]
-                    if hi > lo:
-                        values[pid][pat] = (values[pid][pat] - lo) / (hi - lo)
+                    hi = maxs.get(pat, 0)
+                    if hi > 0:
+                        values[pid][pat] = values[pid][pat] / hi
                     else:
                         values[pid][pat] = 0.0
 
@@ -1332,5 +1359,3 @@ class Lego(KarmaLego):
                             child.indices_of_last_symbol_in_entities = []
                             candidates[signature] = child
         return list(candidates.values())
-
-
