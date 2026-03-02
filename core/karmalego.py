@@ -421,10 +421,18 @@ class TIRP:
         # Determine which entities to check
         indices_to_check = self.parent_entity_indices_supporting if self.parent_entity_indices_supporting is not None else range(len(entity_list))
 
+        # Early-abandon: precompute constants once.
+        # If current_support + remaining_to_check < min_support_count it is impossible
+        # to reach the threshold no matter what the remaining entities return.
+        # We only abandon for patterns that will be pruned, so embeddings_map is unaffected.
+        total_to_check = len(indices_to_check)
+        n_entities = len(entity_list)
+        min_support_count = self.min_ver_supp * n_entities  # float; compared with int sums
+
         # Check if we can use the optimized guided extension
         use_guided_extension = getattr(self, "parent_embeddings_map", None) is not None
 
-        for orig_idx in indices_to_check:
+        for check_pos, orig_idx in enumerate(indices_to_check):
             # Get the entity data
             if precomputed is not None:
                 lexi_sorted = precomputed[orig_idx]["sorted"]
@@ -515,6 +523,14 @@ class TIRP:
                 # Deduplicate and store
                 seen = set(tuple(t) for t in valid_embeddings_here)
                 self.embeddings_map[orig_idx] = sorted(seen)
+
+            # Early-abandon: upper bound on achievable support.
+            # Even if every remaining entity supports this TIRP, can we reach the threshold?
+            remaining = total_to_check - check_pos - 1
+            if len(supporting_reduced) + remaining < min_support_count:
+                self.vertical_support = len(supporting_reduced) / n_entities if n_entities else 0.0
+                self.parent_embeddings_map = None
+                return False
 
         # --- Finalize Support ---
         self.entity_indices_supporting = list(supporting_reduced)
