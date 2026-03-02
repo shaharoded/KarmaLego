@@ -1435,6 +1435,18 @@ class Lego(KarmaLego):
         _base_dec_index = curr_num_of_symbols - 1
         _paths_cache: dict = {}
 
+        # Level-2 upper-bound filter: for each (new_symbol, rel_last_new) pair encountered,
+        # verify that enough parent-supporting entities have this k=2 sub-pattern in the index.
+        # If the index has no entry at all → Apriori violation, guaranteed infrequent.
+        # If the entity overlap count is below threshold → structurally impossible to meet MVS.
+        # Both cases are cached after first evaluation so the check is O(1) on repeat encounters.
+        sym_A = tirp.symbols[-1]
+        parent_support_set = set(tirp.entity_indices_supporting)
+        n_entities = len(entity_list)
+        min_support_count = self.min_ver_supp * n_entities
+        _l2_pruned: set  = set()   # (new_symbol, rel_last_new) pairs confirmed insufficient
+        _l2_checked: set = set()   # (new_symbol, rel_last_new) pairs already evaluated
+
         for sym_index, ent_index, parent_tuple in sources:
             # Use precomputed sorted entity to avoid re-sorting
             if precomputed is not None:
@@ -1468,6 +1480,23 @@ class Lego(KarmaLego):
                     rel_last_new = pairwise_rels.get((sym_index, after_index))
                     if rel_last_new is None:
                         continue
+
+                    # Upper-bound check (cached per (new_symbol, rel_last_new) pair).
+                    # On first encounter: verify the level-2 index has this k=2 sub-pattern
+                    # AND that enough parent-supporting entities carry it to meet MVS.
+                    # Skip all path/TIRP work for this combination if the bound fails.
+                    l2_pair = (new_symbol, rel_last_new)
+                    if l2_pair in _l2_pruned:
+                        continue
+                    if l2_pair not in _l2_checked:
+                        _l2_checked.add(l2_pair)
+                        l2_eid_map = self.level2_index.get((sym_A, new_symbol, rel_last_new))
+                        if l2_eid_map is None or (
+                            sum(1 for eid in parent_support_set if eid in l2_eid_map)
+                            < min_support_count
+                        ):
+                            _l2_pruned.add(l2_pair)
+                            continue
 
                     # get predecessor relation sequences (excluding the new-last relation)
                     if rel_last_new not in _paths_cache:
