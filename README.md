@@ -170,6 +170,21 @@ Timestamps are held as `int64`; relation checks use pure integer math. If source
 
     A secondary benefit is reduced Python GC pressure: fewer large dicts stay alive simultaneously, so garbage collection cycles are less frequent and cheaper. On large runs this has a measurable wall-clock effect even before any memory limit is approached.
 
+11. **Post-Karma precomputed filter (infrequent symbol eviction):**
+
+    After `run_karma` returns the `frequent_symbols` set, `symbol_index`, `symbol_items`, and `pairwise_rels` are rebuilt in-place for every entity — retaining only entries for symbols that met `min_ver_supp`:
+
+    ```python
+    for entry in precomputed:
+        entry["symbol_index"] = {sym: pos for sym, pos in entry["symbol_index"].items()
+                                  if sym in frequent_symbols}
+        entry["symbol_items"] = tuple(entry["symbol_index"].items())
+        entry["pairwise_rels"] = {(i, j): rel for (i, j), rel in entry["pairwise_rels"].items()
+                                   if lexi[i][2] in frequent_symbols and lexi[j][2] in frequent_symbols}
+    ```
+
+    This is an O(n\_entities × n\_symbols) one-time pass. After it, the inner loop of `all_extensions` (`for new_symbol, positions in symbol_items`) never visits an infrequent symbol at all — the per-iteration `new_symbol not in frequent_symbols` guard is gone entirely. `pairwise_rels` is also smaller, reducing hash-table overhead for every `get()` call during Lego. The savings compound across every DFS node at every depth level.
+
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
 
 **Performance Notes:**
