@@ -428,9 +428,11 @@ class TIRP:
             # Get the entity data
             if precomputed is not None:
                 lexi_sorted = precomputed[orig_idx]["sorted"]
+                pairwise_rels = precomputed[orig_idx].get("pairwise_rels")
             else:
                 lexi_sorted = lexicographic_sorting(entity_list[orig_idx])
-            
+                pairwise_rels = None
+
             entity_ti = [(s, e) for s, e, _ in lexi_sorted]
             entity_symbols = [sym for _, _, sym in lexi_sorted]
             
@@ -454,7 +456,9 @@ class TIRP:
                                 expected_rel = rels_to_check[prev_idx_in_pattern]
                                 ti_1 = entity_ti[prev_entity_idx]
                                 ti_2 = entity_ti[i]
-                                actual_rel = temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance)
+                                actual_rel = (pairwise_rels.get((prev_entity_idx, i))
+                                              if pairwise_rels is not None
+                                              else temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance))
                                 if expected_rel != actual_rel:
                                     all_relations_match = False
                                     break
@@ -481,7 +485,10 @@ class TIRP:
                             ti_1 = entity_ti[matching_option[row_count]]
                             ti_2 = entity_ti[entity_index]
                             expected_rel = self.relations[relation_index]
-                            actual_rel = temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance)
+                            i1, i2 = matching_option[row_count], entity_index
+                            actual_rel = (pairwise_rels.get((i1, i2))
+                                          if pairwise_rels is not None
+                                          else temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance))
                             if expected_rel != actual_rel:
                                 all_relations_match = False
                                 break
@@ -622,7 +629,21 @@ class KarmaLego:
             symbol_to_positions = defaultdict(list)
             for pos, (_, _, sym) in enumerate(lexi):
                 symbol_to_positions[sym].append(pos)
-            precomputed.append({"sorted": lexi, "symbol_index": symbol_to_positions})
+            # Precompute all pairwise temporal relations within max_distance.
+            # The early break exploits that lexi is sorted by start time:
+            # once start_j - end_i > max_distance, all further j also exceed it.
+            # This reduces precompute work from O(m²) to O(m × avg_reachable_j).
+            pairwise_rels: dict = {}
+            for i in range(len(lexi)):
+                end_i = lexi[i][1]
+                for j in range(i + 1, len(lexi)):
+                    start_j = lexi[j][0]
+                    if self.max_distance is not None and start_j - end_i > self.max_distance:
+                        break
+                    rel = temporal_relations(lexi[i][:2], lexi[j][:2], self.epsilon, self.max_distance)
+                    if rel is not None:
+                        pairwise_rels[(i, j)] = rel
+            precomputed.append({"sorted": lexi, "symbol_index": symbol_to_positions, "pairwise_rels": pairwise_rels})
         t_pre_end = time.perf_counter()
 
         # Karma phase: requires precomputed passed in
@@ -1000,46 +1021,42 @@ class Karma(KarmaLego):
                 karma_bar.update(1)  # one unit per symbol processed
 
             # PAIRS (k=2)
+            # Iterate directly over precomputed pairwise_rels instead of the full O(m²) double
+            # loop, visiting only pairs that are within max_distance and have a valid relation.
             tirp_dict = {}
             for eid, entry in enumerate(precomputed):
                 ordered = entry["sorted"]
-                for i in range(len(ordered)):
-                    for j in range(i + 1, len(ordered)):
-                        start_1, end_1, symbol_1 = ordered[i]
-                        start_2, end_2, symbol_2 = ordered[j]
-                        if symbol_1 not in frequent_symbols or symbol_2 not in frequent_symbols:
-                            karma_bar.update(1)
-                            continue
-                        rel = temporal_relations((start_1, end_1), (start_2, end_2), self.epsilon, self.max_distance)
-                        if rel is None:
-                            karma_bar.update(1)
-                            continue
+                for (i, j), rel in entry["pairwise_rels"].items():
+                    symbol_1 = ordered[i][2]
+                    symbol_2 = ordered[j][2]
+                    if symbol_1 not in frequent_symbols or symbol_2 not in frequent_symbols:
+                        continue
 
-                        # Optimization: Check signature before creating object
-                        # Signature is ((sym1, sym2), (rel,)) matching TIRP structure
-                        signature = ((symbol_1, symbol_2), (rel,))
+                    # Optimization: Check signature before creating object
+                    # Signature is ((sym1, sym2), (rel,)) matching TIRP structure
+                    signature = ((symbol_1, symbol_2), (rel,))
 
-                        if signature not in tirp_dict:
-                            # First time seeing this pair+relation
-                            tirp = TIRP(
-                                epsilon=self.epsilon,
-                                max_distance=self.max_distance,
-                                min_ver_supp=self.min_ver_supp,
-                                symbols=[symbol_1, symbol_2],
-                                relations=[rel],
-                                k=2,
-                            )
-                            tirp.entity_indices_supporting = [eid]
-                            tirp.indices_of_last_symbol_in_entities = [j]
-                            tirp.embeddings_map = {eid: [(i, j)]}
-                            tirp_dict[signature] = tirp
+                    if signature not in tirp_dict:
+                        # First time seeing this pair+relation
+                        tirp = TIRP(
+                            epsilon=self.epsilon,
+                            max_distance=self.max_distance,
+                            min_ver_supp=self.min_ver_supp,
+                            symbols=[symbol_1, symbol_2],
+                            relations=[rel],
+                            k=2,
+                        )
+                        tirp.entity_indices_supporting = [eid]
+                        tirp.indices_of_last_symbol_in_entities = [j]
+                        tirp.embeddings_map = {eid: [(i, j)]}
+                        tirp_dict[signature] = tirp
 
-                        else:
-                            existing = tirp_dict[signature]
-                            existing.entity_indices_supporting.append(eid)
-                            existing.indices_of_last_symbol_in_entities.append(j)
-                            existing.embeddings_map.setdefault(eid, []).append((i, j))
-                        karma_bar.update(1)  # one unit per pair attempted
+                    else:
+                        existing = tirp_dict[signature]
+                        existing.entity_indices_supporting.append(eid)
+                        existing.indices_of_last_symbol_in_entities.append(j)
+                        existing.embeddings_map.setdefault(eid, []).append((i, j))
+                karma_bar.update(1)  # one unit per entity processed
 
             # finalize pairs and attach
             for tirp in tirp_dict.values():
@@ -1194,6 +1211,7 @@ class Lego(KarmaLego):
             ti_last = lexi_entity[sym_index][:2]
             end_last = ti_last[1]
             entity_symbol_index = precomputed[ent_index]["symbol_index"]
+            pairwise_rels = precomputed[ent_index].get("pairwise_rels", {})
 
             # Instead of scanning all lexi_entity[sym_index+1:] (O(entity_length)),
             # iterate per symbol and jump to positions after sym_index via bisect (O(log k + occurrences)).
@@ -1207,9 +1225,7 @@ class Lego(KarmaLego):
                     # max_distance every subsequent position is also out of range.
                     if self.max_distance is not None and new_ti[0] - end_last > self.max_distance:
                         break
-                    rel_last_new = temporal_relations(
-                        ti_last, new_ti, self.epsilon, self.max_distance
-                    )
+                    rel_last_new = pairwise_rels.get((sym_index, after_index))
                     if rel_last_new is None:
                         continue
 
