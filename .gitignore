@@ -19,3 +19,6 @@ venv/
 # # Output files
 # discovered_patterns.csv
 # patient_pattern_vectors*
+
+# Temporal files
+nadav_test.csv

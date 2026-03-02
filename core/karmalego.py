@@ -714,7 +714,12 @@ class KarmaLego:
             inverse_symbol_map = json.load(f)
         t0 = time.perf_counter()
 
-        # Precompute sorted entities and symbol→positions index once.
+        # Phase 1 — sort each entity and build symbol→positions index.
+        # pairwise_rels is intentionally deferred to Phase 2 (after singleton Karma)
+        # so that we only compute pairs for frequent symbols, mirroring the C# lab's
+        # _filteredEntities approach.  With ~1250 intervals/patient and max_distance=None
+        # an upfront O(m²) precompute would materialise ~156M dict entries (≈12–15 GB)
+        # before any frequency filtering has been applied.
         t_pre_start = time.perf_counter()
         precomputed = []
         for entity in entity_list:
@@ -722,51 +727,24 @@ class KarmaLego:
             symbol_to_positions = defaultdict(list)
             for pos, (_, _, sym) in enumerate(lexi):
                 symbol_to_positions[sym].append(pos)
-            # Precompute all pairwise temporal relations within max_distance.
-            # The early break exploits that lexi is sorted by start time:
-            # once start_j - end_i > max_distance, all further j also exceed it.
-            # This reduces precompute work from O(m²) to O(m × avg_reachable_j).
-            pairwise_rels: dict = {}
-            for i in range(len(lexi)):
-                end_i = lexi[i][1]
-                for j in range(i + 1, len(lexi)):
-                    start_j = lexi[j][0]
-                    if self.max_distance is not None and start_j - end_i > self.max_distance:
-                        break
-                    rel = temporal_relations(lexi[i][:2], lexi[j][:2], self.epsilon, self.max_distance)
-                    if rel is not None:
-                        pairwise_rels[(i, j)] = rel
-            # Materialise items() once so all_extensions can iterate the same tuple
-            # repeatedly without rebuilding the dict view on every source tuple.
             symbol_items = tuple(symbol_to_positions.items())
-            precomputed.append({"sorted": lexi, "symbol_index": symbol_to_positions, "symbol_items": symbol_items, "pairwise_rels": pairwise_rels})
+            precomputed.append({"sorted": lexi, "symbol_index": symbol_to_positions,
+                                 "symbol_items": symbol_items, "pairwise_rels": {}})
         t_pre_end = time.perf_counter()
 
-        # Karma phase: requires precomputed passed in
+        # Karma phase — runs in three internal phases (see Karma.run_karma docstring):
+        #   A) singleton discovery
+        #   B) filter precomputed to frequent symbols; compute pairwise_rels lazily
+        #   C) k=2 TIRP construction from filtered pairwise_rels
+        # Sub-timings are emitted at DEBUG level from inside run_karma.
         t_karma_start = time.perf_counter()
         karma = Karma(self.epsilon, self.max_distance, self.min_ver_supp, num_relations=self.num_relations)
-        tree, frequent_symbols = karma.run_karma(entity_list, precomputed)
+        tree = karma.run_karma(entity_list, precomputed)
         t_karma_end = time.perf_counter()
 
-        # Filter precomputed in-place: remove infrequent symbols from symbol_index,
-        # symbol_items, and pairwise_rels.  Done once here so that all_extensions
-        # iterates only over surviving symbols and relations — no per-iteration guard needed.
-        for entry in precomputed:
-            lexi = entry["sorted"]
-            entry["symbol_index"] = {
-                sym: pos for sym, pos in entry["symbol_index"].items()
-                if sym in frequent_symbols
-            }
-            entry["symbol_items"] = tuple(entry["symbol_index"].items())
-            entry["pairwise_rels"] = {
-                (i, j): rel
-                for (i, j), rel in entry["pairwise_rels"].items()
-                if lexi[i][2] in frequent_symbols and lexi[j][2] in frequent_symbols
-            }
-
-        # Build level-2 index from Karma's k=2 embeddings for O(1) last-pair lookup
-        # during Lego extension.  Cost is O(total k=2 embeddings) — negligible.
-        level2_index = _build_level2_index(tree)
+        # Build the level-2 index from Karma's k=2 embeddings for O(1) last-pair
+        # lookup during Lego extension. Cost is O(total k=2 embeddings) — negligible.
+        level2_index = self._build_level2_index(tree)
 
         # Lego extension
         # Symbol_index is kept in precomputed so Lego can use it for fast interval lookup.
@@ -837,11 +815,10 @@ class KarmaLego:
         total = time.perf_counter() - t0
         SECONDS_PER_MINUTE = 60.0
         logger.info(
-            "discover_patterns timings (min): precompute=%.4f karma=%.4f lego=%.4f "
-            "flatten=%.4f total=%.4f",
-            (t_pre_end   - t_pre_start)  / SECONDS_PER_MINUTE,
-            (t_karma_end - t_karma_start) / SECONDS_PER_MINUTE,
-            (t_lego_end  - t_lego_start)  / SECONDS_PER_MINUTE,
+            "discover_patterns timings (min): pre=%.4f karma=%.4f lego=%.4f flatten=%.4f total=%.4f",
+            (t_pre_end     - t_pre_start)    / SECONDS_PER_MINUTE,
+            (t_karma_end   - t_karma_start)  / SECONDS_PER_MINUTE,
+            (t_lego_end    - t_lego_start)   / SECONDS_PER_MINUTE,
             (t_flatten_end - t_flatten_start) / SECONDS_PER_MINUTE,
             total / SECONDS_PER_MINUTE,
         )
@@ -1104,7 +1081,50 @@ class KarmaLego:
                         values[pid][pat] = 0.0
 
         return values
-    
+
+    @staticmethod
+    def _build_level2_index(tree):
+        """
+        Build a level-2 index from the frequent k=2 TIRPs in the Karma tree.
+
+        Structure: (sym_A, sym_B, rel) -> {eid -> {pos_A -> [pos_B, ...]}}
+
+        All (pos_A, pos_B) pairs are already CSAC-filtered during Karma, so the
+        caller can skip the last-pair relation check and CSAC check when using
+        this index. That invariant is what makes the optimisation correct without
+        any re-verification.
+
+        Cost is O(total k=2 embeddings) — negligible relative to Karma.
+
+        Parameters
+        ----------
+        tree : TreeNode
+            Root of the Karma-produced pattern tree.
+
+        Returns
+        -------
+        dict
+            Nested mapping (sym_A, sym_B, rel) -> {eid -> {pos_A -> [pos_B, ...]}},
+            covering all frequent k=2 TIRPs and all their entity embeddings.
+        """
+        level2_index = {}
+        for singleton_node in tree.children:
+            for pair_node in singleton_node.children:
+                tirp = pair_node.data
+                if not isinstance(tirp, TIRP) or tirp.k != 2 or not tirp.embeddings_map:
+                    continue
+                sym_A, sym_B = tirp.symbols
+                rel = tirp.relations[0]
+                key = (sym_A, sym_B, rel)
+                eid_dict = {}
+                for eid, embs in tirp.embeddings_map.items():
+                    pos_dict = {}
+                    for pos_A, pos_B in embs:
+                        pos_dict.setdefault(pos_A, []).append(pos_B)
+                    eid_dict[eid] = pos_dict
+                level2_index[key] = eid_dict
+        return level2_index
+
 
 class Karma(KarmaLego):
     def __init__(self, epsilon, max_distance, min_ver_supp, num_relations=7):
@@ -1114,37 +1134,70 @@ class Karma(KarmaLego):
         """
         Karma phase: discover frequent singletons and all length-2 TIRPs.
 
-        Uses precomputed sorted entities and symbol position indexes to avoid recomputation.
+        Internally runs in three sequential phases to keep memory usage bounded on
+        large datasets (e.g. ≥1 000 intervals/entity with ``max_distance=None``).
+
+        **Phase A — Singleton discovery**
+
+        Iterates all distinct symbols across ``entity_list``, computes vertical support
+        from each entity's ``symbol_index``, and builds frequent singleton TIRPs.
+        Produces the ``frequent_symbols`` whitelist and a ``symbol → TreeNode`` map.
+        At this stage ``precomputed[*]["pairwise_rels"]`` is empty; the pair relation
+        dict is intentionally deferred until after frequency filtering.
+
+        **Phase B — Lazy pairwise precomputation**
+
+        Filters each entity's 'symbol_index' (and 'symbol_items') to the
+        frequent symbols found in Phase A, then computes 'pairwise_rels'
+        by iterating only the sorted positions of surviving-symbol intervals.
+
+        Without this split, an upfront O(m²) scan over all symbols would
+        materialise the full pairwise relation dict before any frequency filtering.
+        On large datasets this reaches ~156 M entries (~12-15 GB).
+        Restricting both loops to frequent-symbol positions reduces that by one to two
+        orders of magnitude. The 'max_distance' early-break is still effective
+        because the positions are lexicographically sorted.
+
+        **Phase C — k=2 TIRP construction**
+
+        Consumes the now-populated ``pairwise_rels`` to build all frequent length-2
+        TIRPs (with CSAC filtering) and attaches them as children of the corresponding
+        singleton nodes.
 
         Parameters
         ----------
-        entity_list :
-            List of entities (each a list of (start, end, symbol)).
-        precomputed :
-            List of dicts per entity with keys 'sorted' (lexicographically sorted intervals)
-            and 'symbol_index' (symbol -> positions within that entity).
+        entity_list : list of list of (start, end, symbol)
+            Raw entity sequences, one list per entity.
+        precomputed : list of dict
+            Per-entity dicts with keys:
+
+            'sorted'        - lexicographically sorted intervals.
+            'symbol_index'  - symbol → list[int] positions; mutated in-place
+                              during Phase B to retain frequent symbols only.
+            'symbol_items'  - tuple view of symbol_index; rebuilt in Phase B.
+            'pairwise_rels' - dict (i, j) → rel; empty on entry, populated by
+                              Phase B, and consumed by Phase C.
 
         Returns
         -------
-        tuple[TreeNode, set]
-            ``(tree, frequent_symbols)`` where *tree* is the root node whose children are singleton
-            TIRPs with length-2 TIRPs attached, and *frequent_symbols* is the set of symbols that
-            met ``min_ver_supp`` and can safely be used as a whitelist during Lego extension.
+        TreeNode
+            Root of the Karma tree. Singleton TIRPs are direct children; each
+            carries its frequent k=2 TIRPs as children. 'precomputed' is
+            mutated in-place as a side effect (symbol_index filtered, pairwise_rels
+            populated).
         """
+        _t0 = time.perf_counter()
+
         tree = TreeNode("root")
         frequent_symbols = set()
         symbol_to_singleton_node = {}
 
-        # estimate total work: number of unique symbols + total number of ordered pairs across entities
         symbol_set = {sym for ent in entity_list for _, _, sym in ent}
-        total_pairs = sum(
-            (len(entry["sorted"]) * (len(entry["sorted"]) - 1)) // 2
-            for entry in precomputed
-        )
-        total_work = len(symbol_set) + total_pairs
 
-        with tqdm(total=total_work, desc="Karma phase") as karma_bar:
-            # SINGLETONS
+        # ------------------------------------------------------------------ #
+        # Phase A: singleton discovery                                        #
+        # ------------------------------------------------------------------ #
+        with tqdm(total=len(symbol_set), desc="Karma (singletons)") as bar:
             for sym in symbol_set:
                 supporting_pairs = set()
                 for eid, entry in enumerate(precomputed):
@@ -1171,7 +1224,6 @@ class Karma(KarmaLego):
                         emb = defaultdict(list)
                         for pos, eid in supporting_pairs:
                             emb[eid].append((pos,))
-                        # de-dupe & assign
                         tirp_single.embeddings_map = {eid: sorted(set(tups)) for eid, tups in emb.items()}
                         tirp_single.entity_indices_supporting = entity_indices_supporting
                         tirp_single.indices_of_last_symbol_in_entities = indices_of_last_symbol_in_entities
@@ -1181,37 +1233,110 @@ class Karma(KarmaLego):
                         tree.add_child(node)
                         symbol_to_singleton_node[sym] = node
                         frequent_symbols.add(sym)
-                karma_bar.update(1)  # one unit per symbol processed
+                bar.update(1)
 
-            # PAIRS (k=2)
-            # Iterate directly over precomputed pairwise_rels instead of the full O(m²) double
-            # loop, visiting only pairs that are within max_distance and have a valid relation.
-            sac_rels = get_sac_relations()  # relation-table-aware; computed once outside inner loop
-            tirp_dict = {}
+        _t_a = time.perf_counter()
+
+        # ------------------------------------------------------------------ #
+        # Phase B: filter precomputed to frequent symbols; compute pairwise   #
+        #          relations for frequent-symbol interval pairs only.          #
+        # ------------------------------------------------------------------ #
+        # By restricting both loops to surviving-symbol positions the dict
+        # stays proportional to |frequent_symbols|² × n_entities rather than
+        # the full O(m²) per entity.  The early-break exploits lexicographic
+        # sort: once start_j - end_i > max_distance, all subsequent j are also
+        # out of range and the inner loop terminates immediately.
+        for entry in precomputed:
+            lexi = entry["sorted"]
+            entry["symbol_index"] = {
+                sym: pos for sym, pos in entry["symbol_index"].items()
+                if sym in frequent_symbols
+            }
+            entry["symbol_items"] = tuple(entry["symbol_index"].items())
+
+            freq_positions = sorted(
+                pos for positions in entry["symbol_index"].values() for pos in positions
+            )
+
+            pairwise_rels: dict = {}
+            for ii, i in enumerate(freq_positions):
+                end_i = lexi[i][1]
+                for j in freq_positions[ii + 1:]:
+                    start_j = lexi[j][0]
+                    if self.max_distance is not None and start_j - end_i > self.max_distance:
+                        break
+                    rel = temporal_relations(lexi[i][:2], lexi[j][:2], self.epsilon, self.max_distance)
+                    if rel is not None:
+                        pairwise_rels[(i, j)] = rel
+            entry["pairwise_rels"] = pairwise_rels
+
+        _t_b = time.perf_counter()
+
+        # ------------------------------------------------------------------ #
+        # Phase C: build frequent k=2 TIRPs; attach to the singleton tree.   #
+        # ------------------------------------------------------------------ #
+        self._build_pairs(entity_list, precomputed, tree, symbol_to_singleton_node)
+
+        _t_c = time.perf_counter()
+        _SPM = 60.0
+        logger.debug(
+            "Karma phase timings (min): singletons=%.4f pairwise_precompute=%.4f pairs=%.4f",
+            (_t_a - _t0) / _SPM,
+            (_t_b - _t_a) / _SPM,
+            (_t_c - _t_b) / _SPM,
+        )
+
+        return tree
+
+    def _build_pairs(self, entity_list, precomputed, tree, symbol_to_singleton_node):
+        """
+        Build frequent k=2 TIRPs and attach them to the Karma tree (Phase C).
+
+        Called internally by 'run_karma' after singleton discovery (Phase A)
+        and pairwise relation precomputation (Phase B). Not intended to be
+        called directly.
+
+        'precomputed[*]["pairwise_rels"]' must already be populated with
+        frequent-symbol pairs only (Phase B postcondition); the symbol-whitelist
+        guard inside the loop is a safety net and cannot fire under normal use.
+
+        Parameters
+        ----------
+        entity_list : list
+            Full entity list — used as the vertical-support denominator.
+        precomputed : list of dict
+            Per-entity dicts; 'pairwise_rels' must already be populated.
+        tree : TreeNode
+            Root node returned by Phase A; k=2 children are attached here.
+        symbol_to_singleton_node : dict
+            Map from symbol to TreeNode, built during Phase A.
+        """
+        total_pairs = sum(len(e["pairwise_rels"]) for e in precomputed)
+        sac_rels = get_sac_relations()
+        tirp_dict = {}
+        frequent_symbols = set(symbol_to_singleton_node.keys())
+
+        with tqdm(total=total_pairs, desc="Karma (pairs)") as karma_bar:
             for eid, entry in enumerate(precomputed):
                 ordered = entry["sorted"]
                 for (i, j), rel in entry["pairwise_rels"].items():
                     symbol_1 = ordered[i][2]
                     symbol_2 = ordered[j][2]
+                    # pairwise_rels was built from frequent-symbol positions only (Phase B),
+                    # so this guard fires only if precomputed was constructed externally.
                     if symbol_1 not in frequent_symbols or symbol_2 not in frequent_symbols:
                         continue
 
                     # CSAC adjacency constraint at the k=2 level: for ordering relations,
-                    # verify no other occurrence of symbol_1 exists between positions i and j.
-                    # This ensures all stored k=2 embeddings are already SAC-compliant,
-                    # so Lego extensions only need to check the new pairs they add.
+                    # verify no other occurrence of symbol_1 exists strictly between i and j.
                     if rel in sac_rels:
                         sym1_positions = entry["symbol_index"].get(symbol_1, [])
                         lo_sac = bisect.bisect_right(sym1_positions, i)
                         if lo_sac < len(sym1_positions) and sym1_positions[lo_sac] < j:
-                            continue  # SAC violation: a same-symbol interval sits between i and j
+                            continue  # SAC violation
 
-                    # Optimization: Check signature before creating object
-                    # Signature is ((sym1, sym2), (rel,)) matching TIRP structure
                     signature = ((symbol_1, symbol_2), (rel,))
-
                     if signature not in tirp_dict:
-                        # First time seeing this pair+relation
                         tirp = TIRP(
                             epsilon=self.epsilon,
                             max_distance=self.max_distance,
@@ -1224,81 +1349,29 @@ class Karma(KarmaLego):
                         tirp.indices_of_last_symbol_in_entities = [j]
                         tirp.embeddings_map = {eid: [(i, j)]}
                         tirp_dict[signature] = tirp
-
                     else:
                         existing = tirp_dict[signature]
                         existing.entity_indices_supporting.append(eid)
                         existing.indices_of_last_symbol_in_entities.append(j)
                         existing.embeddings_map.setdefault(eid, []).append((i, j))
-                karma_bar.update(1)  # one unit per entity processed
+                    karma_bar.update(1)
 
-            # finalize pairs and attach
-            for tirp in tirp_dict.values():
-                if tirp.entity_indices_supporting:
-                    unique = set(zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting))
-                    if unique:
-                        sym_idxs, ent_idxs = zip(*unique)
-                        tirp.indices_of_last_symbol_in_entities = list(sym_idxs)
-                        tirp.entity_indices_supporting = list(ent_idxs)
-                
-                # de-dupe embeddings per entity (CSAC hygiene)
-                if tirp.embeddings_map:
-                    tirp.embeddings_map = {eid: sorted(set(tups)) for eid, tups in tirp.embeddings_map.items()}
-                
-                tirp.vertical_support = len(set(tirp.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
-
-                if tirp.vertical_support >= self.min_ver_supp:
-                    parent_symbol = tirp.symbols[0]
-                    parent_node = symbol_to_singleton_node.get(parent_symbol)
-                    if parent_node is not None:
-                        parent_node.add_child(TreeNode(tirp))
-
-        return tree, frequent_symbols
-
-
-def _build_level2_index(tree):
-    """
-    Build a level-2 index from the frequent k=2 TIRPs stored in the Karma tree.
-
-    Structure::
-
-        level2_index[(sym_A, sym_B, rel)] = {eid: {pos_A: [pos_B, ...]}}
-
-    All ``(pos_A, pos_B)`` pairs are already CSAC-filtered (applied during Karma),
-    so the caller can skip both the last-pair relation check and the last-pair CSAC
-    check when using the index. This is the key invariant that makes the optimization
-    correct without any additional re-verification.
-
-    Time: O(total k=2 embeddings) — negligible relative to Karma cost.
-
-    Parameters
-    ----------
-    tree : TreeNode
-        Root of the Karma-produced pattern tree.
-
-    Returns
-    -------
-    dict
-        Nested mapping ``(sym_A, sym_B, rel) → {eid → {pos_A → [pos_B, ...]}}``,
-        covering all frequent k=2 TIRPs and all their entity embeddings.
-    """
-    level2_index = {}
-    for singleton_node in tree.children:
-        for pair_node in singleton_node.children:
-            tirp = pair_node.data
-            if not isinstance(tirp, TIRP) or tirp.k != 2 or not tirp.embeddings_map:
-                continue
-            sym_A, sym_B = tirp.symbols
-            rel = tirp.relations[0]
-            key = (sym_A, sym_B, rel)
-            eid_dict = {}
-            for eid, embs in tirp.embeddings_map.items():
-                pos_dict = {}
-                for pos_A, pos_B in embs:
-                    pos_dict.setdefault(pos_A, []).append(pos_B)
-                eid_dict[eid] = pos_dict
-            level2_index[key] = eid_dict
-    return level2_index
+        for tirp in tirp_dict.values():
+            if tirp.entity_indices_supporting:
+                unique = set(zip(tirp.indices_of_last_symbol_in_entities, tirp.entity_indices_supporting))
+                if unique:
+                    sym_idxs, ent_idxs = zip(*unique)
+                    tirp.indices_of_last_symbol_in_entities = list(sym_idxs)
+                    tirp.entity_indices_supporting = list(ent_idxs)
+            if tirp.embeddings_map:
+                tirp.embeddings_map = {eid: sorted(set(tups)) for eid, tups in tirp.embeddings_map.items()}
+            tirp.vertical_support = (
+                len(set(tirp.entity_indices_supporting)) / len(entity_list) if entity_list else 0.0
+            )
+            if tirp.vertical_support >= self.min_ver_supp:
+                parent_node = symbol_to_singleton_node.get(tirp.symbols[0])
+                if parent_node is not None:
+                    parent_node.add_child(TreeNode(tirp))
 
 
 class Lego(KarmaLego):

@@ -148,13 +148,19 @@ Pairs (k=2) are produced once in Karma and not re-generated in Lego. This elimin
 
    > **Fallback:** `is_above_vertical_support` with `parent_embeddings_map` set always requires a `level2_index` (asserted at entry). If an entity has no index entry for a given `(sym_A, sym_B, rel)` key — meaning Karma found no CSAC-valid pair for it — the entity is skipped immediately via `continue` rather than scanning. Any candidate a bisect scan could produce would fail the same relation or CSAC check that excluded it from the index, so the skip is safe and avoids entering the parent-embedding loop entirely.
 
-7. **One-pass Karma with eager embedding materialization:**
-   The Karma phase uses a **single pass** through entity pairs to both count support AND materialize embeddings (`embeddings_map`) simultaneously. An alternative two-pass approach (first count support, then materialize embeddings only for frequent pairs) would reduce memory during Karma but **doubles the I/O cost** and adds bookkeeping complexity.
-   
-   **Trade-off rationale:**
-   - **Single-pass (current):** Simpler, faster overall, but materializes embeddings for all candidate pairs (including infrequent ones that get discarded).
-   - **Two-pass alternative:** Lower peak RAM during Karma, but requires scanning all pairs twice. The overhead typically exceeds savings unless `min_ver_supp` is extremely low (<0.01).
-   - **Why single-pass wins:** Karma pairs are small (k=2); the real memory bottleneck is the Lego phase with deep patterns. Optimizing Lego embedding cleanup (see CSAC memory hygiene) yields better ROI.
+7. **Two-phase Karma to avoid upfront O(m²) pairwise materialisation:**
+
+   On large datasets (e.g. ≥1 000 intervals/entity with `max_distance=None`), computing pairwise temporal relations for *all* symbol pairs before any frequency filtering produces an O(m²) dict.  At ~1 250 intervals/patient this reaches ~156 M entries (≈12–15 GB) — infeasible before a single TIRP has been evaluated.
+
+   `run_karma` therefore splits into three internal phases:
+
+   - **Phase A — Singleton discovery:** Iterates all distinct symbols, computes vertical support from `symbol_index`, and produces `frequent_symbols`. `pairwise_rels` starts empty; no pair relations are computed yet.
+   - **Phase B — Lazy pairwise precomputation:** Filters each entity's `symbol_index` to frequent symbols only, then computes `pairwise_rels` by iterating only the sorted positions of surviving-symbol intervals.  Both the inner and outer loops are restricted to frequent-symbol positions, so the result is proportional to `|frequent_symbols|² × n_entities` rather than `m²`.  The `max_distance` early-break remains effective because positions are lexicographically sorted.
+   - **Phase C — k=2 TIRP construction:** Consumes the now-populated `pairwise_rels` to build frequent length-2 TIRPs (with CSAC filtering) and attach them to the singleton tree.
+
+   The three phases are encapsulated in a single `Karma.run_karma(entity_list, precomputed)` call; sub-phase timings are logged at DEBUG level.  `discover_patterns` sees only one unified Karma timing.
+
+   **Why not single-pass?** A single pass is feasible on small datasets (few symbols, small `max_distance`), but breaks down when the unfiltered pairwise dict exceeds available RAM.  The two-phase split is strictly better for production-scale data; on small benchmarks overhead is negligible.
 
 8. **Precomputed per-entity views (reused everywhere):**
 Lexicographic sorting and symbol→positions maps are built once and reused in support checks and extension, avoiding repeat work.
@@ -170,20 +176,19 @@ Timestamps are held as `int64`; relation checks use pure integer math. If source
 
     A secondary benefit is reduced Python GC pressure: fewer large dicts stay alive simultaneously, so garbage collection cycles are less frequent and cheaper. On large runs this has a measurable wall-clock effect even before any memory limit is approached.
 
-11. **Post-Karma precomputed filter (infrequent symbol eviction):**
+11. **Post-singleton symbol_index eviction (infrequent symbol removal):**
 
-    After `run_karma` returns the `frequent_symbols` set, `symbol_index`, `symbol_items`, and `pairwise_rels` are rebuilt in-place for every entity — retaining only entries for symbols that met `min_ver_supp`:
+    After Phase A of `run_karma` identifies `frequent_symbols`, Phase B immediately filters each entity's `symbol_index` and `symbol_items` to retain only the surviving symbols:
 
     ```python
-    for entry in precomputed:
-        entry["symbol_index"] = {sym: pos for sym, pos in entry["symbol_index"].items()
-                                  if sym in frequent_symbols}
-        entry["symbol_items"] = tuple(entry["symbol_index"].items())
-        entry["pairwise_rels"] = {(i, j): rel for (i, j), rel in entry["pairwise_rels"].items()
-                                   if lexi[i][2] in frequent_symbols and lexi[j][2] in frequent_symbols}
+    entry["symbol_index"] = {sym: pos for sym, pos in entry["symbol_index"].items()
+                              if sym in frequent_symbols}
+    entry["symbol_items"] = tuple(entry["symbol_index"].items())
     ```
 
-    This is an O(n\_entities × n\_symbols) one-time pass. After it, the inner loop of `all_extensions` (`for new_symbol, positions in symbol_items`) never visits an infrequent symbol at all — the per-iteration `new_symbol not in frequent_symbols` guard is gone entirely. `pairwise_rels` is also smaller, reducing hash-table overhead for every `get()` call during Lego. The savings compound across every DFS node at every depth level.
+    This is an O(n\_entities × n\_symbols) one-time pass performed inside `run_karma` before any pairwise or Lego work begins.  After it, `symbol_items` — the iterable consumed by `all_extensions`'s inner loop — never contains an infrequent symbol, so the per-iteration frequency guard is eliminated entirely.  The savings compound across every DFS node at every depth level.
+
+    Note: `pairwise_rels` is *not* filtered here because it was never computed for infrequent symbols to begin with (Phase B computes it fresh, restricted to frequent-symbol positions only — see item 7).
 
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
 
