@@ -1,6 +1,11 @@
 import pytest
 from core.karmalego import KarmaLego
 
+
+def _key(tirp):
+    """Return the tuple key that apply_patterns_to_entities uses for a TIRP."""
+    return (tuple(tirp.symbols), tuple(tirp.relations))
+
 @pytest.fixture
 def simple_patient_entities():
     """
@@ -64,22 +69,21 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
         entities, df, patient_ids, mode="tirp-count", count_strategy="unique_last"
     )
     # p1 has A, B, A<B
-    assert applied_count_ul["p1"][repr(tA)] == 1
-    assert applied_count_ul["p1"][repr(tB)] == 1
-    assert applied_count_ul["p1"][repr(tA_B_before)] == 1
-    assert repr(tA_B_overlap) not in applied_count_ul["p1"]
+    assert applied_count_ul["p1"][_key(tA)] == 1
+    assert applied_count_ul["p1"][_key(tB)] == 1
+    assert applied_count_ul["p1"][_key(tA_B_before)] == 1
+    assert _key(tA_B_overlap) not in applied_count_ul["p1"]
     # p2 has A, B, A o B
-    assert applied_count_ul["p2"][repr(tA)] == 1
-    assert applied_count_ul["p2"][repr(tB)] == 1
-    assert applied_count_ul["p2"][repr(tA_B_overlap)] == 1
-    assert repr(tA_B_before) not in applied_count_ul["p2"]
+    assert applied_count_ul["p2"][_key(tA)] == 1
+    assert applied_count_ul["p2"][_key(tB)] == 1
+    assert applied_count_ul["p2"][_key(tA_B_overlap)] == 1
+    assert _key(tA_B_before) not in applied_count_ul["p2"]
     # p3 has A, C, A<C
-    assert applied_count_ul["p3"][repr(tA)] == 1
-    assert applied_count_ul["p3"][repr(tC)] == 1
-    assert applied_count_ul["p3"][repr(tA_C_before)] == 1
-    assert repr(tA_B_before) not in applied_count_ul["p3"]
-    assert repr(tA_B_overlap) not in applied_count_ul["p3"]
-
+    assert applied_count_ul["p3"][_key(tA)] == 1
+    assert applied_count_ul["p3"][_key(tC)] == 1
+    assert applied_count_ul["p3"][_key(tA_C_before)] == 1
+    assert _key(tA_B_before) not in applied_count_ul["p3"]
+    assert _key(tA_B_overlap) not in applied_count_ul["p3"]
     # ---- Apply: tirp-count (all) should match here (only one embedding each) ----
     applied_count_all = kl.apply_patterns_to_entities(
         entities, df, patient_ids, mode="tirp-count", count_strategy="all"
@@ -91,64 +95,62 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
         entities, df, patient_ids, mode="tpf-dist", count_strategy="unique_last"
     )
     # Each pair appears in exactly one patient -> normalized to 1 for that patient, 0 for others
-    assert applied_tpf_dist["p1"].get(repr(tA_B_before), 0.0) == 1.0
-    assert applied_tpf_dist["p2"].get(repr(tA_B_before), 0.0) == 0.0
-    assert applied_tpf_dist["p3"].get(repr(tA_B_before), 0.0) == 0.0
+    assert applied_tpf_dist["p1"].get(_key(tA_B_before), 0.0) == 1.0
+    assert applied_tpf_dist["p2"].get(_key(tA_B_before), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(_key(tA_B_before), 0.0) == 0.0
 
-    assert applied_tpf_dist["p2"].get(repr(tA_B_overlap), 0.0) == 1.0
-    assert applied_tpf_dist["p1"].get(repr(tA_B_overlap), 0.0) == 0.0
-    assert applied_tpf_dist["p3"].get(repr(tA_B_overlap), 0.0) == 0.0
+    assert applied_tpf_dist["p2"].get(_key(tA_B_overlap), 0.0) == 1.0
+    assert applied_tpf_dist["p1"].get(_key(tA_B_overlap), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(_key(tA_B_overlap), 0.0) == 0.0
 
-    assert applied_tpf_dist["p3"].get(repr(tA_C_before), 0.0) == 1.0
-    assert applied_tpf_dist["p1"].get(repr(tA_C_before), 0.0) == 0.0
-    assert applied_tpf_dist["p2"].get(repr(tA_C_before), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(_key(tA_C_before), 0.0) == 1.0
+    assert applied_tpf_dist["p1"].get(_key(tA_C_before), 0.0) == 0.0
+    assert applied_tpf_dist["p2"].get(_key(tA_C_before), 0.0) == 0.0
 
     # Singletons: A appears in all 3 patients with count=1 → min=max → normalized to 0.0 per our rule
-    assert applied_tpf_dist["p1"].get(repr(tA), 0.0) == 0.0
-    assert applied_tpf_dist["p2"].get(repr(tA), 0.0) == 0.0
-    assert applied_tpf_dist["p3"].get(repr(tA), 0.0) == 0.0
+    assert applied_tpf_dist["p1"].get(_key(tA), 0.0) == 0.0
+    assert applied_tpf_dist["p2"].get(_key(tA), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(_key(tA), 0.0) == 0.0
     # B appears in p1 & p2 only -> [1,1,0] → normalized [1,1,0]
-    assert applied_tpf_dist["p1"].get(repr(tB), 0.0) == 1.0
-    assert applied_tpf_dist["p2"].get(repr(tB), 0.0) == 1.0
-    assert applied_tpf_dist["p3"].get(repr(tB), 0.0) == 0.0
+    assert applied_tpf_dist["p1"].get(_key(tB), 0.0) == 1.0
+    assert applied_tpf_dist["p2"].get(_key(tB), 0.0) == 1.0
+    assert applied_tpf_dist["p3"].get(_key(tB), 0.0) == 0.0
     # C appears only in p3 -> [0,0,1] → normalized [0,0,1]
-    assert applied_tpf_dist["p1"].get(repr(tC), 0.0) == 0.0
-    assert applied_tpf_dist["p2"].get(repr(tC), 0.0) == 0.0
-    assert applied_tpf_dist["p3"].get(repr(tC), 0.0) == 1.0
-
+    assert applied_tpf_dist["p1"].get(_key(tC), 0.0) == 0.0
+    assert applied_tpf_dist["p2"].get(_key(tC), 0.0) == 0.0
+    assert applied_tpf_dist["p3"].get(_key(tC), 0.0) == 1.0
     # ---- Apply: tpf-duration (union span per patient, then min–max per pattern) ----
     applied_tpf_dur = kl.apply_patterns_to_entities(
         entities, df, patient_ids, mode="tpf-duration", count_strategy="unique_last"
     )
     # For pairs, each span is 3 (end_last - start_first) for the patient that has it, then normalized to 1
-    assert applied_tpf_dur["p1"].get(repr(tA_B_before), 0.0) == 1.0
-    assert applied_tpf_dur["p2"].get(repr(tA_B_before), 0.0) == 0.0
-    assert applied_tpf_dur["p3"].get(repr(tA_B_before), 0.0) == 0.0
+    assert applied_tpf_dur["p1"].get(_key(tA_B_before), 0.0) == 1.0
+    assert applied_tpf_dur["p2"].get(_key(tA_B_before), 0.0) == 0.0
+    assert applied_tpf_dur["p3"].get(_key(tA_B_before), 0.0) == 0.0
 
-    assert applied_tpf_dur["p2"].get(repr(tA_B_overlap), 0.0) == 1.0
-    assert applied_tpf_dur["p1"].get(repr(tA_B_overlap), 0.0) == 0.0
-    assert applied_tpf_dur["p3"].get(repr(tA_B_overlap), 0.0) == 0.0
+    assert applied_tpf_dur["p2"].get(_key(tA_B_overlap), 0.0) == 1.0
+    assert applied_tpf_dur["p1"].get(_key(tA_B_overlap), 0.0) == 0.0
+    assert applied_tpf_dur["p3"].get(_key(tA_B_overlap), 0.0) == 0.0
 
-    assert applied_tpf_dur["p3"].get(repr(tA_C_before), 0.0) == 1.0
-    assert applied_tpf_dur["p1"].get(repr(tA_C_before), 0.0) == 0.0
-    assert applied_tpf_dur["p2"].get(repr(tA_C_before), 0.0) == 0.0
+    assert applied_tpf_dur["p3"].get(_key(tA_C_before), 0.0) == 1.0
+    assert applied_tpf_dur["p1"].get(_key(tA_C_before), 0.0) == 0.0
+    assert applied_tpf_dur["p2"].get(_key(tA_C_before), 0.0) == 0.0
 
     # Singletons: spans then per-pattern min–max
     # A spans: [1, 2, 1] -> [0.0, 1.0, 0.0]
-    assert applied_tpf_dur["p1"].get(repr(tA), 0.0) == pytest.approx(0.0)
-    assert applied_tpf_dur["p2"].get(repr(tA), 0.0) == pytest.approx(1.0)
-    assert applied_tpf_dur["p3"].get(repr(tA), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p1"].get(_key(tA), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p2"].get(_key(tA), 0.0) == pytest.approx(1.0)
+    assert applied_tpf_dur["p3"].get(_key(tA), 0.0) == pytest.approx(0.0)
 
     # B spans: [1, 2, 0] -> [(1-0)/(2-0)=0.5, 1.0, 0.0]
-    assert applied_tpf_dur["p1"].get(repr(tB), 0.0) == pytest.approx(0.5)
-    assert applied_tpf_dur["p2"].get(repr(tB), 0.0) == pytest.approx(1.0)
-    assert applied_tpf_dur["p3"].get(repr(tB), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p1"].get(_key(tB), 0.0) == pytest.approx(0.5)
+    assert applied_tpf_dur["p2"].get(_key(tB), 0.0) == pytest.approx(1.0)
+    assert applied_tpf_dur["p3"].get(_key(tB), 0.0) == pytest.approx(0.0)
 
     # C spans: [0, 0, 1] -> [0.0, 0.0, 1.0]
-    assert applied_tpf_dur["p1"].get(repr(tC), 0.0) == pytest.approx(0.0)
-    assert applied_tpf_dur["p2"].get(repr(tC), 0.0) == pytest.approx(0.0)
-    assert applied_tpf_dur["p3"].get(repr(tC), 0.0) == pytest.approx(1.0)
-
+    assert applied_tpf_dur["p1"].get(_key(tC), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p2"].get(_key(tC), 0.0) == pytest.approx(0.0)
+    assert applied_tpf_dur["p3"].get(_key(tC), 0.0) == pytest.approx(1.0)
 
 def test_count_strategy_unique_last_vs_all_for_ABC_case():
     """
@@ -174,8 +176,8 @@ def test_count_strategy_unique_last_vs_all_for_ABC_case():
     v_all = kl.apply_patterns_to_entities(entities, [target], patient_ids,
                                           mode="tirp-count", count_strategy="all")
 
-    assert v_ul["p1"][repr(target)] == 1
-    assert v_all["p1"][repr(target)] == 3
+    assert v_ul["p1"][_key(target)] == 1
+    assert v_all["p1"][_key(target)] == 3
 
 
 @pytest.fixture

@@ -974,8 +974,11 @@ class KarmaLego:
         # (no float formatting) and correct (repr used to embed vertical_support, making two
         # structurally identical patterns from different runs collide or diverge incorrectly).
         need_norm = mode in ("tpf-dist", "tpf-duration")
+        n_patients = len(patient_ids)
         values = {pid: defaultdict(float) for pid in patient_ids}
-        maxs: dict = {}  # per-pattern max seen across all patients; built during Pass 1
+        maxs: dict = {}        # per-pattern max value seen (over hits only)
+        mins: dict = {}        # per-pattern min value seen (over hits only)
+        hit_counts: dict = {}  # per-pattern number of patients with at least one embedding
         for tirp in tqdm(patterns_list, desc="Applying patterns to entities"):
             key = (tuple(tirp.symbols), tuple(tirp.relations))
             for eid, (ti, syms, sym_idx) in enumerate(precomp):
@@ -990,21 +993,28 @@ class KarmaLego:
                 else:
                     raise ValueError("mode must be one of: 'tirp-count', 'tpf-dist', 'tpf-duration'.")
                 values[pid][key] = val
-                if need_norm and val > maxs.get(key, 0):
-                    maxs[key] = val
+                if need_norm:
+                    if val > maxs.get(key, 0):
+                        maxs[key] = val
+                    if key not in mins or val < mins[key]:
+                        mins[key] = val
+                    hit_counts[key] = hit_counts.get(key, 0) + 1
 
         # ---- Pass 2: normalization for cohort-based modes ----
-        # Because missing patients are treated as 0, the global min is always 0.
-        # We only need the per-pattern max (already tracked in Pass 1) to normalise to [0,1].
-        # This avoids the O(#patterns × #patients) series-building loop of the naïve approach.
+        # The effective min per pattern is:
+        #   - 0  if any patient is missing (they contribute 0 implicitly), which is the common case.
+        #   - mins[key]  if every patient has a hit (hit_count == n_patients).
+        # When effective_min == max (no variation across the cohort), result is 0 by convention.
+        # This is O(#hits) — no per-pattern full-cohort scan needed.
         if need_norm:
             for pid in patient_ids:
                 if not values[pid]:
                     continue
                 for pat in list(values[pid].keys()):
                     hi = maxs.get(pat, 0)
-                    if hi > 0:
-                        values[pid][pat] = values[pid][pat] / hi
+                    lo = mins[pat] if hit_counts.get(pat, 0) == n_patients else 0
+                    if hi > lo:
+                        values[pid][pat] = (values[pid][pat] - lo) / (hi - lo)
                     else:
                         values[pid][pat] = 0.0
 
