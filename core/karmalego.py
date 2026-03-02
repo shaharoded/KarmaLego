@@ -24,6 +24,11 @@ if not logger.hasHandlers():
     logging.basicConfig(level=logging.INFO)
 
 
+def _default_tirp_filter(d):
+    """Default filter for find_tree_nodes: matches any TIRP-like object."""
+    return hasattr(d, "vertical_support")
+
+
 def log_execution(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -101,9 +106,9 @@ class TreeNode:
         Caches result to avoid repeated work unless tree mutated.
         """
         if filter_fn is None:
-            filter_fn = lambda d: hasattr(d, "vertical_support")
+            filter_fn = _default_tirp_filter
 
-        if self._cached_subtree_nodes is not None and filter_fn == (lambda d: hasattr(d, "vertical_support")):
+        if self._cached_subtree_nodes is not None and filter_fn is _default_tirp_filter:
             # only reuse cache for default filter
             return list(self._cached_subtree_nodes)
 
@@ -116,7 +121,7 @@ class TreeNode:
             # push children normally (no reverse needed unless ordering matters)
             stack.extend(node.children)
 
-        if filter_fn == (lambda d: hasattr(d, "vertical_support")):
+        if filter_fn is _default_tirp_filter:
             self._cached_subtree_nodes = list(collected)  # cache default-filter result
 
         return collected
