@@ -73,6 +73,8 @@ def temporal_relations(ti_1, ti_2, epsilon, max_distance):
       '=' : equal
 
     Returns None if no relation matches or gap exceeds max_distance.
+    Assumes intervals are in forward lexicographic order (as produced by lexicographic_sorting):
+    start1 <= start2, and if equal then end1 >= end2.  Behaviour is undefined for reversed inputs.
     """
     start1, end1 = ti_1
     start2, end2 = ti_2
