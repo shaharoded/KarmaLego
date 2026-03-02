@@ -16,7 +16,7 @@ from core.utils import (
     find_all_possible_extensions,
     decode_pattern
 )
-from core.relation_table import set_relation_table
+from core.relation_table import set_relation_table, get_sac_relations
 
 # logging decorator
 logger = logging.getLogger(__name__)
@@ -422,7 +422,8 @@ class TIRP:
         """
         supporting_reduced = set()
         last_symbol_map = {}  # original_idx -> set of last symbol positions
-        
+        _sac_rels = get_sac_relations()  # relation codes that trigger CSAC adjacency check
+
         # Determine which entities to check
         indices_to_check = self.parent_entity_indices_supporting if self.parent_entity_indices_supporting is not None else range(len(entity_list))
 
@@ -451,13 +452,22 @@ class TIRP:
             
             valid_embeddings_here = []
 
+            # Pre-extract symbol_index once; needed by both CSAC checks below.
+            # When precomputed is unavailable (standalone / unit-test usage), build it
+            # from entity_symbols so CSAC adjacency checks always have a valid index.
+            if precomputed is not None:
+                symbol_index = precomputed[orig_idx]["symbol_index"]
+            else:
+                symbol_index = {}
+                for _pos, _sym in enumerate(entity_symbols):
+                    symbol_index.setdefault(_sym, []).append(_pos)
+
             if use_guided_extension:
                 # --- OPTIMIZED PATH: Extend parent embeddings ---
                 target_symbol = self.symbols[-1]
                 parent_embeddings = self.parent_embeddings_map.get(orig_idx, [])
                 # Use symbol_index + bisect to jump directly to occurrences of
                 # target_symbol after parent_last_idx, avoiding the O(m) linear scan.
-                symbol_index = precomputed[orig_idx]["symbol_index"] if precomputed is not None else None
                 target_positions = symbol_index.get(target_symbol, []) if symbol_index is not None else None
                 rels_to_check = self.relations[-(self.k - 1):]
 
@@ -486,7 +496,21 @@ class TIRP:
                                 break
 
                         if all_relations_match:
-                            valid_embeddings_here.append(parent_tup + (i,))
+                            # CSAC backward check: for every previous position in the
+                            # parent embedding that has an ordering relation to the new
+                            # position i, verify no intervening occurrence of the same
+                            # concept exists between them (adjacency constraint).
+                            sac_ok = True
+                            for prev_i_pat, prev_e_idx in enumerate(parent_tup):
+                                if rels_to_check[prev_i_pat] in _sac_rels:
+                                    sym_prev = lexi_sorted[prev_e_idx][2]
+                                    sym_pos = symbol_index.get(sym_prev, [])
+                                    lo_s = bisect.bisect_right(sym_pos, prev_e_idx)
+                                    if lo_s < len(sym_pos) and sym_pos[lo_s] < i:
+                                        sac_ok = False
+                                        break
+                            if sac_ok:
+                                valid_embeddings_here.append(parent_tup + (i,))
             
             else:
                 # --- FULL SEARCH PATH: Generate from scratch ---
@@ -514,6 +538,14 @@ class TIRP:
                             if expected_rel != actual_rel:
                                 all_relations_match = False
                                 break
+                            # CSAC: for ordering relations, verify no same-concept occurrence
+                            # between positions i1 and i2 (adjacency constraint).
+                            if expected_rel in _sac_rels:
+                                sym_pos = symbol_index.get(entity_symbols[i1], [])
+                                lo_s = bisect.bisect_right(sym_pos, i1)
+                                if lo_s < len(sym_pos) and sym_pos[lo_s] < i2:
+                                    all_relations_match = False
+                                    break
                             relation_index += 1
                         if not all_relations_match:
                             break
@@ -1101,6 +1133,7 @@ class Karma(KarmaLego):
             # PAIRS (k=2)
             # Iterate directly over precomputed pairwise_rels instead of the full O(m²) double
             # loop, visiting only pairs that are within max_distance and have a valid relation.
+            sac_rels = get_sac_relations()  # relation-table-aware; computed once outside inner loop
             tirp_dict = {}
             for eid, entry in enumerate(precomputed):
                 ordered = entry["sorted"]
@@ -1109,6 +1142,16 @@ class Karma(KarmaLego):
                     symbol_2 = ordered[j][2]
                     if symbol_1 not in frequent_symbols or symbol_2 not in frequent_symbols:
                         continue
+
+                    # CSAC adjacency constraint at the k=2 level: for ordering relations,
+                    # verify no other occurrence of symbol_1 exists between positions i and j.
+                    # This ensures all stored k=2 embeddings are already SAC-compliant,
+                    # so Lego extensions only need to check the new pairs they add.
+                    if rel in sac_rels:
+                        sym1_positions = entry["symbol_index"].get(symbol_1, [])
+                        lo_sac = bisect.bisect_right(sym1_positions, i)
+                        if lo_sac < len(sym1_positions) and sym1_positions[lo_sac] < j:
+                            continue  # SAC violation: a same-symbol interval sits between i and j
 
                     # Optimization: Check signature before creating object
                     # Signature is ((sym1, sym2), (rel,)) matching TIRP structure

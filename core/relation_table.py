@@ -375,6 +375,32 @@ def get_num_relations():
     return _active_num_relations
 
 
+def get_sac_relations():
+    """
+    Return the frozenset of relation codes for which the CSAC adjacency constraint applies.
+
+    CSAC requires that for a pair (i, j) related by an ordering relation, no other
+    occurrence of the same concept exists between positions i and j in the entity.
+    The triggering set depends on the active relation alphabet:
+
+    - 7R: {'<', 'm'}  (Before and Meets are both strictly sequential non-overlapping)
+    - 5R: {'<'}       ('m' is merged into '<')
+    - 3R: {'<'}       (same)
+    - 2R: {'p'}       (proceed = merged Before/Meets/Overlaps; treated as ordering)
+
+    Returns
+    -------
+    frozenset
+        Relation codes that trigger the CSAC adjacency check.
+    """
+    if _active_num_relations == 7:
+        return frozenset({'<', 'm'})
+    if _active_num_relations == 2:
+        return frozenset({'p'})
+    # 3R and 5R: only '<', since 'm' is absorbed into '<'
+    return frozenset({'<'})
+
+
 @lru_cache(maxsize=512)
 def compose_relation(a_r_b, b_r_c):
     """

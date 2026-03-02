@@ -106,11 +106,22 @@ Allen relation composition reduces relation search at extension time; the `compo
 3. **SAC (Subset of Active Candidates):**
 Support checks for a child TIRP are restricted to the entities that supported its parent, avoiding scans of unrelated entities at deeper levels.
 
-4. **CSAC (Consistent SAC, embedding-level)**  
-   Beyond entity filtering, we maintain the **exact parent embeddings** (index tuples) per entity and only accept child embeddings that extend those specific tuples.
+4. **CSAC (Consistent SAC) — two enforced constraints:**
 
-   - **Accuracy:** identical to full search; CSAC is pruning, not approximation.
-   - **Speed:** large savings in dense timelines; no wasted checks on impossible extensions.
+   **4a. Embedding-level consistency:**  
+   The exact parent embeddings (index tuples) per entity are tracked. Each child embedding at level k+1 must directly extend a valid parent embedding at level k — no independent full-search is re-run for k>1 patterns. This is the "consistent" part: embeddings grow incrementally and only along verified paths.
+
+   **4b. Adjacency constraint (same-concept interposer check):**  
+   For any pair of positions `(i, j)` in an embedding where the relation is an ordering type (e.g. `<`, `m`, or `p` depending on the relation alphabet), no other occurrence of the **same concept** is permitted to exist between positions `i` and `j` in the entity. This is the core SAC definition from the paper.  
+   This is enforced at **two levels**:
+   - **Karma (k=2):** Candidate `(i, j)` pairs are filtered before being stored in any embedding map.
+   - **Lego extension (k>2):** After relation matching, all new ordering pairs introduced by the extension are checked for interposers before the extended embedding is accepted.
+
+   The ordering relation set is **relation-table-aware** via `get_sac_relations()`:  
+   `{'<','m'}` for 7R · `{'<'}` for 5R and 3R · `{'p'}` for 2R.
+
+   - **Accuracy:** identical to a full exhaustive search with the same constraint applied; CSAC is pruning + constraint enforcement, not an approximation.
+   - **Speed:** large savings in dense timelines by skipping impossible extensions and non-adjacent embeddings early.
 
 5. **Skip duplicate pair generation:**
 Pairs (k=2) are produced once in Karma and not re-generated in Lego. This eliminates ~×2 duplication for pairs and can reduce Lego runtime dramatically.
