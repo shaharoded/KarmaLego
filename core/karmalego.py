@@ -450,29 +450,38 @@ class TIRP:
                 # --- OPTIMIZED PATH: Extend parent embeddings ---
                 target_symbol = self.symbols[-1]
                 parent_embeddings = self.parent_embeddings_map.get(orig_idx, [])
-                
+                # Use symbol_index + bisect to jump directly to occurrences of
+                # target_symbol after parent_last_idx, avoiding the O(m) linear scan.
+                symbol_index = precomputed[orig_idx]["symbol_index"] if precomputed is not None else None
+                target_positions = symbol_index.get(target_symbol, []) if symbol_index is not None else None
+                rels_to_check = self.relations[-(self.k - 1):]
+
                 for parent_tup in parent_embeddings:
                     parent_last_idx = parent_tup[-1]
-                    # Find instances of target_symbol after the parent's last symbol
-                    for i in range(parent_last_idx + 1, len(entity_symbols)):
-                        if entity_symbols[i] == target_symbol:
-                            # Verify relations between new symbol and existing symbols
-                            all_relations_match = True
-                            rels_to_check = self.relations[-(self.k - 1):]
-                            
-                            for prev_idx_in_pattern, prev_entity_idx in enumerate(parent_tup):
-                                expected_rel = rels_to_check[prev_idx_in_pattern]
-                                ti_1 = entity_ti[prev_entity_idx]
-                                ti_2 = entity_ti[i]
-                                actual_rel = (pairwise_rels.get((prev_entity_idx, i))
-                                              if pairwise_rels is not None
-                                              else temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance))
-                                if expected_rel != actual_rel:
-                                    all_relations_match = False
-                                    break
-                            
-                            if all_relations_match:
-                                valid_embeddings_here.append(parent_tup + (i,))
+                    if target_positions is not None:
+                        lo = bisect.bisect_right(target_positions, parent_last_idx)
+                        candidates_i = target_positions[lo:]
+                    else:
+                        # fallback: no precomputed index available
+                        candidates_i = [i for i in range(parent_last_idx + 1, len(entity_symbols))
+                                        if entity_symbols[i] == target_symbol]
+
+                    for i in candidates_i:
+                        # Verify relations between new symbol and all existing symbols
+                        all_relations_match = True
+                        for prev_idx_in_pattern, prev_entity_idx in enumerate(parent_tup):
+                            expected_rel = rels_to_check[prev_idx_in_pattern]
+                            ti_1 = entity_ti[prev_entity_idx]
+                            ti_2 = entity_ti[i]
+                            actual_rel = (pairwise_rels.get((prev_entity_idx, i))
+                                          if pairwise_rels is not None
+                                          else temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance))
+                            if expected_rel != actual_rel:
+                                all_relations_match = False
+                                break
+
+                        if all_relations_match:
+                            valid_embeddings_here.append(parent_tup + (i,))
             
             else:
                 # --- FULL SEARCH PATH: Generate from scratch ---
