@@ -675,7 +675,10 @@ class KarmaLego:
                     rel = temporal_relations(lexi[i][:2], lexi[j][:2], self.epsilon, self.max_distance)
                     if rel is not None:
                         pairwise_rels[(i, j)] = rel
-            precomputed.append({"sorted": lexi, "symbol_index": symbol_to_positions, "pairwise_rels": pairwise_rels})
+            # Materialise items() once so all_extensions can iterate the same tuple
+            # repeatedly without rebuilding the dict view on every source tuple.
+            symbol_items = tuple(symbol_to_positions.items())
+            precomputed.append({"sorted": lexi, "symbol_index": symbol_to_positions, "symbol_items": symbol_items, "pairwise_rels": pairwise_rels})
         t_pre_end = time.perf_counter()
 
         # Karma phase: requires precomputed passed in
@@ -1238,13 +1241,16 @@ class Lego(KarmaLego):
         candidates = {}
 
         # Prefer embedding-aware enumeration for CSAC
-        sources = []
-        if getattr(tirp, "embeddings_map", None):
-            for ent_index, tuples in tirp.embeddings_map.items():
-                for tup in tuples:
-                    sources.append((tup[-1], ent_index, tup))
-        else:
+        if not getattr(tirp, "embeddings_map", None):
             raise RuntimeError("Lego extension requires embeddings_map for CSAC; legacy path disabled.")
+
+        # Lazy generator — avoids materialising the full list of (sym_index, ent_index, tup)
+        # triples, which can be large when a pattern has high support across many entities.
+        sources = (
+            (tup[-1], ent_index, tup)
+            for ent_index, tuples in tirp.embeddings_map.items()
+            for tup in tuples
+        )
 
         # Within a single all_extensions call, tirp.relations / curr_rel_index / decrement_index
         # are all fixed — only rel_last_new varies. Cache the path-tree result keyed on
@@ -1268,12 +1274,15 @@ class Lego(KarmaLego):
             end_last = ti_last[1]
             entity_symbol_index = precomputed[ent_index]["symbol_index"]
             pairwise_rels = precomputed[ent_index].get("pairwise_rels", {})
+            # Use the precomputed tuple of items to avoid rebuilding the dict view on
+            # every iteration when the same ent_index appears across multiple sources.
+            symbol_items = precomputed[ent_index].get("symbol_items") or entity_symbol_index.items()
 
             # Instead of scanning all lexi_entity[sym_index+1:] (O(entity_length)),
             # iterate per symbol and jump to positions after sym_index via bisect (O(log k + occurrences)).
             # Since lexi_entity is sorted by start time, we also get an early-exit when
             # max_distance is exceeded for the remaining positions of a given symbol.
-            for new_symbol, positions in entity_symbol_index.items():
+            for new_symbol, positions in symbol_items:
                 # Skip symbols that cannot meet min_ver_supp globally (Karma whitelist).
                 if self.frequent_symbols is not None and new_symbol not in self.frequent_symbols:
                     continue

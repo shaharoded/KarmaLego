@@ -77,8 +77,8 @@ def temporal_relations(ti_1, ti_2, epsilon, max_distance):
     start1, end1 = ti_1
     start2, end2 = ti_2
 
-    # gap too large
-    if start2 - end1 > max_distance:
+    # gap too large (guard against None: no max_distance means no gap limit)
+    if max_distance is not None and start2 - end1 > max_distance:
         return None
 
     # equal (within epsilon)
