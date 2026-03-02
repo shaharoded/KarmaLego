@@ -1148,6 +1148,7 @@ class Lego(KarmaLego):
         """
         # Breadth-first expansion queue
         queue = deque([node])
+        queued = {id(node)}  # track enqueued nodes by identity to avoid O(n) deque membership test
         with tqdm(desc="Lego phase (nodes expanded)", unit=" node/s") as bar:
             while queue:
                 current = queue.popleft()
@@ -1174,15 +1175,16 @@ class Lego(KarmaLego):
 
                     # After extensions are generated, embeddings are no longer needed for this node.
                     current.data.embeddings_map = None
-                    
+
                     for ext in ok:
                         child = TreeNode(ext)
                         current.add_child(child)
+                        queued.add(id(child))
                         queue.append(child)
-                # also continue to existing children regardless (they may have been added earlier)
+                # Also enqueue pre-existing children (e.g. k=2 pairs attached by Karma under k=1 singletons).
                 for child in current.children:
-                    if child not in queue:
-                        # avoid duplicates
+                    if id(child) not in queued:
+                        queued.add(id(child))
                         queue.append(child)
                 bar.update(1)
         return node
