@@ -392,7 +392,7 @@ class TIRP:
 
         return ""
     
-    def is_above_vertical_support(self, entity_list, precomputed=None):
+    def is_above_vertical_support(self, entity_list, precomputed=None, level2_index=None):
         """
         Compute and update vertical support for this TIRP over the provided entity list.
         Optimized to use parent embeddings for guided search (Forward Pruning).
@@ -438,6 +438,24 @@ class TIRP:
         # Check if we can use the optimized guided extension
         use_guided_extension = getattr(self, "parent_embeddings_map", None) is not None
 
+        # Pre-compute level-2 index constants for the guided extension path.
+        # These depend only on self (this TIRP), not on any specific entity, so we
+        # compute them once here rather than repeating the work on every entity iteration.
+        _ge_target_symbol = None      # new symbol being appended
+        _ge_rels_to_check = None      # relations from all k-1 prev positions to the new symbol
+        _ge_l2_eid_map    = None      # {eid: {pos_A → [pos_B, ...]}} for the direct last pair
+        _ge_check_count   = None      # relation/CSAC checks when index path is used (len-1)
+        if use_guided_extension:
+            _ge_target_symbol = self.symbols[-1]
+            _ge_rels_to_check = self.relations[-(self.k - 1):]
+            if level2_index is not None and _ge_rels_to_check:
+                l2_key = (self.symbols[-2], _ge_target_symbol, _ge_rels_to_check[-1])
+                _ge_l2_eid_map = level2_index.get(l2_key)
+            # NOTE: eff_check_count is computed per-entity below, because l2_pos_dict may be
+            # None for some entities even when _ge_l2_eid_map is not None (entity not in the
+            # k=2 index).  _ge_check_count is only the optimised count for the index path.
+            _ge_check_count = len(_ge_rels_to_check) - (1 if _ge_l2_eid_map is not None else 0)
+
         for check_pos, orig_idx in enumerate(indices_to_check):
             # Get the entity data
             if precomputed is not None:
@@ -464,45 +482,57 @@ class TIRP:
 
             if use_guided_extension:
                 # --- OPTIMIZED PATH: Extend parent embeddings ---
-                target_symbol = self.symbols[-1]
+                # Re-use constants computed before the entity loop.
+                target_symbol = _ge_target_symbol
+                rels_to_check = _ge_rels_to_check
+                check_count   = _ge_check_count
                 parent_embeddings = self.parent_embeddings_map.get(orig_idx, [])
-                # Use symbol_index + bisect to jump directly to occurrences of
-                # target_symbol after parent_last_idx, avoiding the O(m) linear scan.
-                target_positions = symbol_index.get(target_symbol, []) if symbol_index is not None else None
-                rels_to_check = self.relations[-(self.k - 1):]
+
+                # Per-entity view of the level-2 index: pos_A → [pos_B, ...].
+                # When present, candidates_i is pulled directly from the index — pairs
+                # are already relation-verified and CSAC-compliant from Karma, so we
+                # skip the last relation check and the last CSAC check for every candidate.
+                l2_pos_dict = _ge_l2_eid_map.get(orig_idx) if _ge_l2_eid_map is not None else None
+                # Bisect-based list used as fallback when the level2_index is absent.
+                target_positions = symbol_index.get(target_symbol, [])
 
                 for parent_tup in parent_embeddings:
                     parent_last_idx = parent_tup[-1]
-                    if target_positions is not None:
+                    if l2_pos_dict is not None:
+                        # O(1) grouped lookup: all pre-verified pos_B values for this pos_A.
+                        candidates_i = l2_pos_dict.get(parent_last_idx, ())
+                        # Last pair pre-verified by the index → skip its relation/CSAC check.
+                        eff_check_count = check_count
+                    else:
                         lo = bisect.bisect_right(target_positions, parent_last_idx)
                         candidates_i = target_positions[lo:]
-                    else:
-                        # fallback: no precomputed index available
-                        candidates_i = [i for i in range(parent_last_idx + 1, len(entity_symbols))
-                                        if entity_symbols[i] == target_symbol]
+                        # No index for this entity → must verify all relations explicitly.
+                        eff_check_count = len(rels_to_check)
 
                     for i in candidates_i:
-                        # Verify relations between new symbol and all existing symbols
+                        # Verify relations from each earlier parent position to new position i.
+                        # eff_check_count == len(rels_to_check) - 1 when the level2_index
+                        # provided candidates (last pair pre-verified); full length otherwise.
                         all_relations_match = True
-                        for prev_idx_in_pattern, prev_entity_idx in enumerate(parent_tup):
-                            expected_rel = rels_to_check[prev_idx_in_pattern]
-                            ti_1 = entity_ti[prev_entity_idx]
-                            ti_2 = entity_ti[i]
+                        for j in range(eff_check_count):
+                            prev_entity_idx = parent_tup[j]
+                            expected_rel    = rels_to_check[j]
                             actual_rel = (pairwise_rels.get((prev_entity_idx, i))
                                           if pairwise_rels is not None
-                                          else temporal_relations(ti_1, ti_2, self.epsilon, self.max_distance))
+                                          else temporal_relations(entity_ti[prev_entity_idx], entity_ti[i],
+                                                                  self.epsilon, self.max_distance))
                             if expected_rel != actual_rel:
                                 all_relations_match = False
                                 break
 
                         if all_relations_match:
-                            # CSAC backward check: for every previous position in the
-                            # parent embedding that has an ordering relation to the new
-                            # position i, verify no intervening occurrence of the same
-                            # concept exists between them (adjacency constraint).
+                            # CSAC: only check pairs covered by eff_check_count.
+                            # The last-pair CSAC is already guaranteed by the level2_index
+                            # (applied during Karma when building the k=2 embeddings).
                             sac_ok = True
-                            for prev_i_pat, prev_e_idx in enumerate(parent_tup):
-                                if rels_to_check[prev_i_pat] in _sac_rels:
+                            for j in range(eff_check_count):
+                                if rels_to_check[j] in _sac_rels:
+                                    prev_e_idx = parent_tup[j]
                                     sym_prev = lexi_sorted[prev_e_idx][2]
                                     sym_pos = symbol_index.get(sym_prev, [])
                                     lo_s = bisect.bisect_right(sym_pos, prev_e_idx)
@@ -719,10 +749,16 @@ class KarmaLego:
         tree, frequent_symbols = karma.run_karma(entity_list, precomputed)
         t_karma_end = time.perf_counter()
 
+        # Build level-2 index from Karma's k=2 embeddings for O(1) last-pair lookup
+        # during Lego extension.  Cost is O(total k=2 embeddings) — negligible.
+        level2_index = _build_level2_index(tree)
+
         # Lego extension
         # Symbol_index is kept in precomputed so Lego can use it for fast interval lookup.
         t_lego_start = time.perf_counter()
-        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True, num_relations=self.num_relations, frequent_symbols=frequent_symbols)
+        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True,
+                    num_relations=self.num_relations, frequent_symbols=frequent_symbols,
+                    level2_index=level2_index)
         full_tree = lego.run_lego(tree, entity_list, precomputed, max_length=max_length)
         t_lego_end = time.perf_counter()
 
@@ -756,10 +792,13 @@ class KarmaLego:
                 if k > group[fset][1]:
                     group[fset][1] = k
 
-        # A pattern is closed  iff no longer pattern shares its support  (k == max_k)
-        # A pattern is super   iff a shorter  pattern shares its support  (k >  min_k)
+        # A pattern is closed  iff no longer pattern shares its identical support set (k == max_k)
+        # A pattern is super   iff it is closed AND a shorter pattern shares its support set,
+        #                       i.e. it is the longest in its closed equivalence class AND
+        #                       that class contains a proper sub-pattern.  (super ⊆ closed)
         is_closed = [group[fset][1] == k for fset, k in zip(support_sets, ks)]
-        is_super  = [group[fset][0] <  k for fset, k in zip(support_sets, ks)]
+        is_super  = [group[fset][0] < k and group[fset][1] == k
+                     for fset, k in zip(support_sets, ks)]
 
         # Build DataFrame
         records = []
@@ -1203,6 +1242,51 @@ class Karma(KarmaLego):
         return tree, frequent_symbols
 
 
+def _build_level2_index(tree):
+    """
+    Build a level-2 index from the frequent k=2 TIRPs stored in the Karma tree.
+
+    Structure::
+
+        level2_index[(sym_A, sym_B, rel)] = {eid: {pos_A: [pos_B, ...]}}
+
+    All ``(pos_A, pos_B)`` pairs are already CSAC-filtered (applied during Karma),
+    so the caller can skip both the last-pair relation check and the last-pair CSAC
+    check when using the index. This is the key invariant that makes the optimization
+    correct without any additional re-verification.
+
+    Time: O(total k=2 embeddings) — negligible relative to Karma cost.
+
+    Parameters
+    ----------
+    tree : TreeNode
+        Root of the Karma-produced pattern tree.
+
+    Returns
+    -------
+    dict
+        Nested mapping ``(sym_A, sym_B, rel) → {eid → {pos_A → [pos_B, ...]}}``,
+        covering all frequent k=2 TIRPs and all their entity embeddings.
+    """
+    level2_index = {}
+    for singleton_node in tree.children:
+        for pair_node in singleton_node.children:
+            tirp = pair_node.data
+            if not isinstance(tirp, TIRP) or tirp.k != 2 or not tirp.embeddings_map:
+                continue
+            sym_A, sym_B = tirp.symbols
+            rel = tirp.relations[0]
+            key = (sym_A, sym_B, rel)
+            eid_dict = {}
+            for eid, embs in tirp.embeddings_map.items():
+                pos_dict = {}
+                for pos_A, pos_B in embs:
+                    pos_dict.setdefault(pos_A, []).append(pos_B)
+                eid_dict[eid] = pos_dict
+            level2_index[key] = eid_dict
+    return level2_index
+
+
 class Lego(KarmaLego):
     """
     Lego phase driver (pattern extension).
@@ -1219,13 +1303,18 @@ class Lego(KarmaLego):
         to skip symbols that can never meet the support threshold, reducing branching.
         If ``None`` (default), no filtering is applied — safe for standalone Lego use.
     """
-    def __init__(self, tree, epsilon, max_distance, min_ver_supp, show_detail, num_relations=7, frequent_symbols=None):
+    def __init__(self, tree, epsilon, max_distance, min_ver_supp, show_detail, num_relations=7,
+                 frequent_symbols=None, level2_index=None):
         self.tree = tree
         super().__init__(epsilon, max_distance, min_ver_supp, num_relations=num_relations)
         self.show_detail = show_detail  # whether to keep per-extension verbosity
         # Whitelist of globally frequent symbols from the Karma phase.
         # None means no filtering (safe fallback if called without Karma output).
         self.frequent_symbols = frequent_symbols
+        # Level-2 index: (sym_A, sym_B, rel) → {eid → {pos_A → [pos_B, ...]}}.
+        # Eliminates the last relation check and last CSAC check in the guided
+        # extension path, replacing a bisect scan with an O(1) grouped lookup.
+        self.level2_index = level2_index
 
     def run_lego(self, node, entity_list, precomputed, max_length):
         """
@@ -1274,7 +1363,8 @@ class Lego(KarmaLego):
                     if self.show_detail:
                         iterator = tqdm(extensions, desc=f"Extending TIRP k={current.data.k}", leave=False)
                     for ext in iterator:
-                        if ext.is_above_vertical_support(entity_list, precomputed=precomputed):
+                        if ext.is_above_vertical_support(entity_list, precomputed=precomputed,
+                                                         level2_index=self.level2_index):
                             ok.append(ext)
 
                     # After extensions are generated, embeddings are no longer needed for this node.
