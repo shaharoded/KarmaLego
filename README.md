@@ -541,7 +541,6 @@ To upload this project to an external machine, create a self-contained zip that 
 Compress-Archive -Force -Path `
     "core",`
     "main.ipynb",`
-    "main.py",`
     "pyproject.toml",`
     "requirements.txt",`
     "README.md",`
