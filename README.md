@@ -225,6 +225,7 @@ KarmaLego/
 │   ├── test_tirp.py                            # TIRP equality, support, relation semantics
 │   └── test_karmalego.py                       # core pipeline / small synthetic pattern discovery
 ├── main.py                                     # example end-to-end driver / demo script
+├── main.ipynb                                  # example end-to-end driver / demo script (better for VMs)
 ├── pyproject.toml                              # editable installation manifest
 ├── pytest.ini                                  # pytest configuration
 ├── requirements.txt                            # pinned dependencies (pandas, dask, tqdm, pytest, numpy, etc.)
@@ -527,3 +528,36 @@ If your data exceeds these limits, **do not run as a single job**.
 3. **Merge results:** Concatenate the resulting pattern DataFrames.
 
 >> Note that a split based on subsets of patients should not be very efficient, as the in-memory tree might grow roughly to the same size. Only the process itself might be faster, but the memory usage should not be affected.
+
+---
+
+## Packaging for a Remote VM
+
+To upload this project to an external machine, create a self-contained zip that includes all source code and configuration but excludes unit-tests, cached bytecode, and data files (which should be uploaded separately or already present on the VM).
+
+**PowerShell (Windows) — run from the `KarmaLego\` root:**
+
+```powershell
+Compress-Archive -Force -Path `
+    "core",`
+    "main.ipynb",`
+    "main.py",`
+    "pyproject.toml",`
+    "requirements.txt",`
+    "README.md",`
+    "LICENSE" `
+    -DestinationPath "..\karmalego_package.zip"
+```
+
+The zip is written one level up (next to the project folder) to keep it out of the repo.
+
+**On the VM, install with:**
+
+```bash
+unzip karmalego_package.zip
+cd KarmaLego
+pip install -e .
+```
+
+`pip install -e .` registers `core` as a package in the environment (using the dependencies declared in `pyproject.toml`) so `from core.karmalego import ...` works from any working directory, including from inside Jupyter.  
+The first notebook cell runs this automatically — you only need to run it once after upload.
