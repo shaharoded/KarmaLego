@@ -546,15 +546,13 @@ Compress-Archive -Force -Path `
     "requirements.txt",`
     "README.md",`
     "LICENSE" `
-    -DestinationPath "..\karmalego_package.zip"
+    -DestinationPath "karmalego-deploy.zip"
 ```
-
-The zip is written one level up (next to the project folder) to keep it out of the repo.
 
 **On the VM, install with:**
 
 ```bash
-unzip karmalego_package.zip
+unzip karmalego-deploy.zip
 cd KarmaLego
 pip install -e .
 ```
