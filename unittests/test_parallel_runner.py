@@ -1,7 +1,8 @@
 import pytest
 import json
 import pandas as pd
-from core.parallel_runner import run_parallel_jobs
+from core.karmalego import KarmaLego
+from core.parallel_runner import ParallelRunner, run_parallel_batches, run_parallel_jobs
 
 def test_run_parallel_jobs_simple(tmp_path):
     """
@@ -71,3 +72,104 @@ def test_run_parallel_jobs_simple(tmp_path):
     df_cd = result_df[result_df["job_name"] == "job_CD"]
     found_cd = any(tuple(row.symbols) == ("C", "D") for row in df_cd.itertuples())
     assert found_cd, "Job CD should have found pattern C->D"
+
+
+def test_parallel_batches_finalize_exact_candidates():
+    """
+    Batch mode should use batches only for candidate generation.
+    EF is frequent in the first batch but not globally, so finalization drops it.
+    AB and CD are globally frequent and remain.
+    """
+    entities = [
+        [(0, 1, "A"), (2, 3, "B"), (4, 5, "E"), (6, 7, "F")],
+        [(0, 1, "C"), (2, 3, "D")],
+        [(0, 1, "A"), (2, 3, "B")],
+        [(0, 1, "C"), (2, 3, "D")],
+    ]
+    params = {
+        "epsilon": 0,
+        "max_distance": 10,
+        "min_ver_supp": 0.5,
+        "min_length": 2,
+    }
+
+    runner = ParallelRunner(max_workers=1)
+    df, candidates, batch_results = runner.parallel_batches(
+        entities,
+        params,
+        batch_size=2,
+        return_candidates=True,
+        show_progress=False,
+    )
+
+    final_signatures = {(tuple(row.symbols), tuple(row.relations)) for row in df.itertuples()}
+
+    assert ((("A", "B"), ("<",))) in final_signatures
+    assert ((("C", "D"), ("<",))) in final_signatures
+    assert ((("E", "F"), ("<",))) in candidates
+    assert ((("E", "F"), ("<",))) not in final_signatures
+    assert len(batch_results) == 2
+
+
+def test_parallel_batches_matches_full_discovery_for_global_patterns():
+    entities = [
+        [(0, 1, "A"), (2, 3, "B"), (4, 5, "E"), (6, 7, "F")],
+        [(0, 1, "C"), (2, 3, "D")],
+        [(0, 1, "A"), (2, 3, "B")],
+        [(0, 1, "C"), (2, 3, "D")],
+    ]
+    params = {
+        "epsilon": 0,
+        "max_distance": 10,
+        "min_ver_supp": 0.5,
+        "min_length": 2,
+    }
+
+    full_kl = KarmaLego(epsilon=0, max_distance=10, min_ver_supp=0.5)
+    full_df = full_kl.discover_patterns(entities, min_length=2)
+    batch_df = run_parallel_batches(entities, params, batch_size=2, num_workers=1,
+                                    show_progress=False)
+
+    full_signatures = {
+        (tuple(row.symbols), tuple(row.relations))
+        for row in full_df.itertuples()
+    }
+    batch_signatures = {
+        (tuple(row.symbols), tuple(row.relations))
+        for row in batch_df.itertuples()
+    }
+
+    assert batch_signatures == full_signatures
+
+
+def test_parallel_batches_parallel_finalization_matches_sequential():
+    entities = [
+        [(0, 1, "A"), (2, 3, "B"), (4, 5, "E"), (6, 7, "F")],
+        [(0, 1, "C"), (2, 3, "D")],
+        [(0, 1, "A"), (2, 3, "B")],
+        [(0, 1, "C"), (2, 3, "D")],
+    ]
+    params = {
+        "epsilon": 0,
+        "max_distance": 10,
+        "min_ver_supp": 0.5,
+        "min_length": 2,
+    }
+
+    sequential = run_parallel_batches(
+        entities, params, batch_size=2, num_workers=1, show_progress=False
+    )
+    parallel = run_parallel_batches(
+        entities, params, batch_size=2, num_workers=2, show_progress=False
+    )
+
+    seq_signatures = {
+        (tuple(row.symbols), tuple(row.relations), row.vertical_support)
+        for row in sequential.itertuples()
+    }
+    par_signatures = {
+        (tuple(row.symbols), tuple(row.relations), row.vertical_support)
+        for row in parallel.itertuples()
+    }
+
+    assert par_signatures == seq_signatures

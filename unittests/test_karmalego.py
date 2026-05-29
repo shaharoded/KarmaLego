@@ -152,6 +152,24 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
     assert applied_tpf_dur["p2"].get(_key(tC), 0.0) == pytest.approx(0.0)
     assert applied_tpf_dur["p3"].get(_key(tC), 0.0) == pytest.approx(1.0)
 
+
+def test_apply_patterns_parallel_matches_sequential(simple_patient_entities):
+    entities, patient_ids = simple_patient_entities
+    kl = KarmaLego(epsilon=0, max_distance=100, min_ver_supp=1/3)
+    df, tirps = kl.discover_patterns(entities, min_length=1, return_tirps=True, show_progress=False)
+
+    sequential = kl.apply_patterns_to_entities(
+        entities, tirps, patient_ids, mode="tirp-count",
+        count_strategy="unique_last", n_jobs=1, show_progress=False
+    )
+    parallel = kl.apply_patterns_to_entities(
+        entities, tirps, patient_ids, mode="tirp-count",
+        count_strategy="unique_last", n_jobs=2, show_progress=False
+    )
+
+    assert parallel == sequential
+
+
 def test_count_strategy_unique_last_vs_all_for_ABC_case():
     """
     Single patient with A...B...A...B...C.

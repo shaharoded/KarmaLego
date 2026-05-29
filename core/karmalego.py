@@ -1,6 +1,7 @@
 import bisect
 import logging
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import wraps
 from collections import defaultdict
 from tqdm import tqdm
@@ -39,6 +40,112 @@ def log_execution(func):
         return result
 
     return wrapper
+
+
+def _valid_embeddings_for_apply(tirp, ti, syms, sym_idx, epsilon, max_distance):
+    """
+    Return embedding index tuples satisfying a TIRP inside one precomputed entity.
+    Top-level helper so patient-level apply can use ProcessPoolExecutor on Windows.
+    """
+    pat_syms = tirp.symbols
+    n_pat = len(pat_syms)
+    if n_pat > len(syms):
+        return []
+
+    for sym in pat_syms:
+        if sym not in sym_idx:
+            return []
+
+    out = []
+    relations = tirp.relations
+    stack = [(0, 0, ())]
+    while stack:
+        p_pos, e_min, partial = stack.pop()
+        sym = pat_syms[p_pos]
+        positions = sym_idx[sym]
+        start_i = bisect.bisect_left(positions, e_min)
+        for k in range(start_i, len(positions)):
+            pos = positions[k]
+            candidate = partial + (pos,)
+            if p_pos == n_pat - 1:
+                ok = True
+                rel_idx = 0
+                for col, ent_idx in enumerate(candidate[1:]):
+                    for row in range(col + 1):
+                        i1 = candidate[row]
+                        i2 = ent_idx
+                        expected = relations[rel_idx]
+                        actual = temporal_relations(ti[i1], ti[i2], epsilon, max_distance)
+                        if expected != actual:
+                            ok = False
+                            break
+                        rel_idx += 1
+                    if not ok:
+                        break
+                if ok:
+                    out.append(candidate)
+            else:
+                stack.append((p_pos + 1, pos + 1, candidate))
+    return out
+
+
+def _horizontal_support_from_embeddings_for_apply(embeddings, count_strategy):
+    if not embeddings:
+        return 0
+    if count_strategy == "all":
+        return len(embeddings)
+    if count_strategy == "unique_last":
+        return len({t[-1] for t in embeddings})
+    raise ValueError("count_strategy must be 'unique_last' or 'all'.")
+
+
+def _union_span_from_embeddings_for_apply(embeddings, ti):
+    if not embeddings:
+        return 0
+    ivs = []
+    for tup in embeddings:
+        start_first = ti[tup[0]][0]
+        end_last = ti[tup[-1]][1]
+        ivs.append((start_first, end_last))
+
+    ivs.sort(key=lambda x: (x[0], x[1]))
+    merged = []
+    for s, e in ivs:
+        if not merged or s > merged[-1][1]:
+            merged.append([s, e])
+        elif e > merged[-1][1]:
+            merged[-1][1] = e
+
+    total = 0
+    for s, e in merged:
+        total += (e - s)
+    return int(total)
+
+
+def _apply_patterns_patient_worker(args):
+    """
+    Compute raw pattern values for one patient.
+    Returns (patient_id, {pattern_key: value}).
+    """
+    pid, precomp_entry, patterns_list, mode, count_strategy, epsilon, max_distance = args
+    ti, syms, sym_idx = precomp_entry
+    patient_values = {}
+
+    for tirp in patterns_list:
+        emb = _valid_embeddings_for_apply(tirp, ti, syms, sym_idx, epsilon, max_distance)
+        if not emb:
+            continue
+
+        key = (tuple(tirp.symbols), tuple(tirp.relations))
+        if mode == "tirp-count" or mode == "tpf-dist":
+            val = _horizontal_support_from_embeddings_for_apply(emb, count_strategy)
+        elif mode == "tpf-duration":
+            val = _union_span_from_embeddings_for_apply(emb, ti)
+        else:
+            raise ValueError("mode must be one of: 'tirp-count', 'tpf-dist', 'tpf-duration'.")
+        patient_values[key] = val
+
+    return pid, patient_values
 
 
 class TreeNode:
@@ -682,7 +789,8 @@ class KarmaLego:
 
     @log_execution
     def discover_patterns(
-        self, entity_list, min_length=1, max_length=None, return_tree=False, return_tirps=False, inverse_mapping_path="data/output/inverse_symbol_map.json"
+        self, entity_list, min_length=1, max_length=None, return_tree=False, return_tirps=False,
+        inverse_mapping_path="data/output/inverse_symbol_map.json", show_progress=True
     ):
         """
         Discover all frequent TIRPs from entity_list and return a flat DataFrame summary (default).
@@ -701,6 +809,8 @@ class KarmaLego:
             If True, also return the list of TIRP objects in addition to DataFrame.
         inverse_mapping_path : str
             Path for inverse mapping file to map symbols to readable TIRPs.
+        show_progress : bool
+            Whether to show tqdm progress bars during Karma and Lego phases.
 
         Returns
         -------
@@ -743,7 +853,7 @@ class KarmaLego:
         # Sub-timings are emitted at DEBUG level from inside run_karma.
         t_karma_start = time.perf_counter()
         karma = Karma(self.epsilon, self.max_distance, self.min_ver_supp, num_relations=self.num_relations)
-        tree = karma.run_karma(entity_list, precomputed)
+        tree = karma.run_karma(entity_list, precomputed, show_progress=show_progress)
         t_karma_end = time.perf_counter()
 
         # Build the level-2 index from Karma's k=2 embeddings for O(1) last-pair
@@ -753,9 +863,10 @@ class KarmaLego:
         # Lego extension
         # Symbol_index is kept in precomputed so Lego can use it for fast interval lookup.
         t_lego_start = time.perf_counter()
-        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=True,
+        lego = Lego(tree, self.epsilon, self.max_distance, self.min_ver_supp, show_detail=show_progress,
                     num_relations=self.num_relations, level2_index=level2_index)
-        full_tree = lego.run_lego(tree, entity_list, precomputed, max_length=max_length)
+        full_tree = lego.run_lego(tree, entity_list, precomputed, max_length=max_length,
+                                  show_progress=show_progress)
         t_lego_end = time.perf_counter()
 
         # Flatten and filter
@@ -846,6 +957,8 @@ class KarmaLego:
         patient_ids,
         mode: str = "tirp-count",              # "tirp-count" | "tpf-dist" | "tpf-duration"
         count_strategy: str = "unique_last",   # for horizontal support: "unique_last" or "all"
+        n_jobs: int = 1,
+        show_progress: bool = True,
     ):
         """
         Build per-patient features from discovered TIRPs.
@@ -868,6 +981,10 @@ class KarmaLego:
             (start(first symbol) to end(last symbol)), then min-max normalize across patients (per pattern).
         count_strategy : {"unique_last","all"}
             Strategy for horizontal support counting (see above).
+        n_jobs : int
+            Number of worker processes for patient-level parallel apply. Use 1 for sequential.
+        show_progress : bool
+            Whether to show a tqdm progress bar.
 
         Returns
         -------
@@ -945,96 +1062,6 @@ class KarmaLego:
                 sym_idx.setdefault(sym, []).append(pos)
             precomp.append((ti, syms, sym_idx))
 
-        # ---- Helpers ----
-        def _valid_embeddings_in_entity(tirp, ti, syms, sym_idx):
-            """Return list of index-tuples (embedding positions) that satisfy tirp.symbols & all relations.
-
-            Uses bisect jumps through symbol_index to enumerate candidates without scanning the full
-            symbol list linearly.  For an entity with m events and a pattern of length p, worst-case
-            is still O(m^p) but average-case is dramatically smaller when symbols are infrequent.
-            """
-            pat_syms = tirp.symbols
-            n_pat = len(pat_syms)
-            if n_pat > len(syms):
-                return []
-            # Early-exit: if any required symbol is missing, skip entirely
-            for sym in pat_syms:
-                if sym not in sym_idx:
-                    return []
-
-            # Iterative DFS using an explicit stack to avoid Python recursion overhead.
-            # Each stack frame: (p_pos, e_min, partial_tuple)
-            out = []
-            relations = tirp.relations
-            epsilon = self.epsilon
-            max_dist = self.max_distance
-            stack = [(0, 0, ())]
-            while stack:
-                p_pos, e_min, partial = stack.pop()
-                sym = pat_syms[p_pos]
-                positions = sym_idx[sym]  # guaranteed present by early-exit above
-                start_i = bisect.bisect_left(positions, e_min)
-                for k in range(start_i, len(positions)):
-                    pos = positions[k]
-                    candidate = partial + (pos,)
-                    if p_pos == n_pat - 1:
-                        # Full candidate tuple: verify all pairwise relations
-                        ok = True
-                        rel_idx = 0
-                        for col, ent_idx in enumerate(candidate[1:]):
-                            for row in range(col + 1):
-                                i1 = candidate[row]
-                                i2 = ent_idx
-                                expected = relations[rel_idx]
-                                actual = temporal_relations(ti[i1], ti[i2], epsilon, max_dist)
-                                if expected != actual:
-                                    ok = False
-                                    break
-                                rel_idx += 1
-                            if not ok:
-                                break
-                        if ok:
-                            out.append(candidate)
-                    else:
-                        stack.append((p_pos + 1, pos + 1, candidate))
-            return out
-
-        def _horizontal_support_from_embeddings(embeddings):
-            """Count embeddings per strategy."""
-            if not embeddings:
-                return 0
-            if count_strategy == "all":
-                return len(embeddings)
-            elif count_strategy == "unique_last":
-                # Count one per distinct last index -> collapses A...B...A...B...C to 1 for A<B<C
-                return len({t[-1] for t in embeddings})
-            else:
-                raise ValueError("count_strategy must be 'unique_last' or 'all'.")
-
-        def _union_span_from_embeddings(embeddings, ti):
-            """Compute total union duration over [start(first), end(last)] for each embedding."""
-            if not embeddings:
-                return 0
-            # Build span intervals for each embedding
-            ivs = []
-            for tup in embeddings:
-                start_first = ti[tup[0]][0]
-                end_last = ti[tup[-1]][1]
-                ivs.append((start_first, end_last))
-            # Merge overlapping intervals (classic sweep)
-            ivs.sort(key=lambda x: (x[0], x[1]))
-            merged = []
-            for s, e in ivs:
-                if not merged or s > merged[-1][1]:
-                    merged.append([s, e])
-                else:
-                    if e > merged[-1][1]:
-                        merged[-1][1] = e
-            total = 0
-            for s, e in merged:
-                total += (e - s)
-            return int(total)
-
         # ---- Pass 1: compute raw values per patient & pattern ----
         # Key: (tuple(symbols), tuple(relations)) - a stable tuple that is cheaper than repr(tirp)
         # (no float formatting) and correct (repr used to embed vertical_support, making two
@@ -1045,19 +1072,9 @@ class KarmaLego:
         maxs: dict = {}        # per-pattern max value seen (over hits only)
         mins: dict = {}        # per-pattern min value seen (over hits only)
         hit_counts: dict = {}  # per-pattern number of patients with at least one embedding
-        for tirp in tqdm(patterns_list, desc="Applying patterns to entities"):
-            key = (tuple(tirp.symbols), tuple(tirp.relations))
-            for eid, (ti, syms, sym_idx) in enumerate(precomp):
-                emb = _valid_embeddings_in_entity(tirp, ti, syms, sym_idx)
-                if not emb:
-                    continue
-                pid = patient_ids[eid]
-                if mode == "tirp-count" or mode == "tpf-dist":
-                    val = _horizontal_support_from_embeddings(emb)
-                elif mode == "tpf-duration":
-                    val = _union_span_from_embeddings(emb, ti)
-                else:
-                    raise ValueError("mode must be one of: 'tirp-count', 'tpf-dist', 'tpf-duration'.")
+
+        def _record_patient_values(pid, patient_values):
+            for key, val in patient_values.items():
                 values[pid][key] = val
                 if need_norm:
                     if val > maxs.get(key, 0):
@@ -1065,6 +1082,35 @@ class KarmaLego:
                     if key not in mins or val < mins[key]:
                         mins[key] = val
                     hit_counts[key] = hit_counts.get(key, 0) + 1
+
+        worker_args = [
+            (pid, entry, patterns_list, mode, count_strategy, self.epsilon, self.max_distance)
+            for pid, entry in zip(patient_ids, precomp)
+        ]
+
+        if n_jobs is None:
+            n_jobs = os.cpu_count() or 1
+        n_jobs = max(1, min(int(n_jobs), len(worker_args) if worker_args else 1))
+
+        if n_jobs == 1:
+            iterator = tqdm(worker_args, desc="Applying patterns to patients", disable=not show_progress)
+            for args in iterator:
+                pid, patient_values = _apply_patterns_patient_worker(args)
+                _record_patient_values(pid, patient_values)
+        else:
+            try:
+                with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+                    futures = [executor.submit(_apply_patterns_patient_worker, args) for args in worker_args]
+                    iterator = tqdm(as_completed(futures), total=len(futures),
+                                    desc="Applying patterns to patients", disable=not show_progress)
+                    for future in iterator:
+                        pid, patient_values = future.result()
+                        _record_patient_values(pid, patient_values)
+            except (OSError, PermissionError):
+                iterator = tqdm(worker_args, desc="Applying patterns to patients", disable=not show_progress)
+                for args in iterator:
+                    pid, patient_values = _apply_patterns_patient_worker(args)
+                    _record_patient_values(pid, patient_values)
 
         # ---- Pass 2: normalization for cohort-based modes ----
         # The effective min per pattern is:
@@ -1134,7 +1180,7 @@ class Karma(KarmaLego):
     def __init__(self, epsilon, max_distance, min_ver_supp, num_relations=7):
         super().__init__(epsilon, max_distance, min_ver_supp, num_relations=num_relations)
 
-    def run_karma(self, entity_list, precomputed):
+    def run_karma(self, entity_list, precomputed, show_progress=True):
         """
         Karma phase: discover frequent singletons and all length-2 TIRPs.
 
@@ -1201,7 +1247,7 @@ class Karma(KarmaLego):
         # ------------------------------------------------------------------ #
         # Phase A: singleton discovery                                        #
         # ------------------------------------------------------------------ #
-        with tqdm(total=len(symbol_set), desc="Karma (singletons)") as bar:
+        with tqdm(total=len(symbol_set), desc="Karma (singletons)", disable=not show_progress) as bar:
             for sym in symbol_set:
                 supporting_pairs = set()
                 for eid, entry in enumerate(precomputed):
@@ -1279,7 +1325,8 @@ class Karma(KarmaLego):
         # ------------------------------------------------------------------ #
         # Phase C: build frequent k=2 TIRPs; attach to the singleton tree.   #
         # ------------------------------------------------------------------ #
-        self._build_pairs(entity_list, precomputed, tree, symbol_to_singleton_node)
+        self._build_pairs(entity_list, precomputed, tree, symbol_to_singleton_node,
+                          show_progress=show_progress)
 
         _t_c = time.perf_counter()
         _SPM = 60.0
@@ -1292,7 +1339,8 @@ class Karma(KarmaLego):
 
         return tree
 
-    def _build_pairs(self, entity_list, precomputed, tree, symbol_to_singleton_node):
+    def _build_pairs(self, entity_list, precomputed, tree, symbol_to_singleton_node,
+                     show_progress=True):
         """
         Build frequent k=2 TIRPs and attach them to the Karma tree (Phase C).
 
@@ -1320,7 +1368,7 @@ class Karma(KarmaLego):
         tirp_dict = {}
         frequent_symbols = set(symbol_to_singleton_node.keys())
 
-        with tqdm(total=total_pairs, desc="Karma (pairs)") as karma_bar:
+        with tqdm(total=total_pairs, desc="Karma (pairs)", disable=not show_progress) as karma_bar:
             for eid, entry in enumerate(precomputed):
                 ordered = entry["sorted"]
                 for (i, j), rel in entry["pairwise_rels"].items():
@@ -1399,7 +1447,7 @@ class Lego(KarmaLego):
         # extension path, replacing a bisect scan with an O(1) grouped lookup.
         self.level2_index = level2_index
 
-    def run_lego(self, node, entity_list, precomputed, max_length):
+    def run_lego(self, node, entity_list, precomputed, max_length, show_progress=True):
         """
         Extend base patterns recursively to higher-order TIRPs using depth-first search.
 
@@ -1424,7 +1472,7 @@ class Lego(KarmaLego):
         TreeNode
             The same tree with extended TIRPs grafted in.
         """
-        with tqdm(desc="Lego phase (nodes expanded)", unit=" node/s") as bar:
+        with tqdm(desc="Lego phase (nodes expanded)", unit=" node/s", disable=not show_progress) as bar:
             def _dfs(current):
                 if not isinstance(current.data, TIRP):
                     # Tree root (non-TIRP): descend into singleton children.
@@ -1447,7 +1495,8 @@ class Lego(KarmaLego):
                 else:
                     # Generate candidate extensions and filter by support.
                     extensions = self.all_extensions(entity_list, tirp, precomputed)
-                    iterator = (tqdm(extensions, desc=f"Extending TIRP k={tirp.k}", leave=False)
+                    iterator = (tqdm(extensions, desc=f"Extending TIRP k={tirp.k}", leave=False,
+                                     disable=not show_progress)
                                 if self.show_detail else extensions)
                     ok = [ext for ext in iterator
                           if ext.is_above_vertical_support(entity_list, precomputed=precomputed,

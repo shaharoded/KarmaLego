@@ -298,6 +298,27 @@ Example invocation:
 python main.py
 ```
 
+Useful flags:
+
+```bash
+# Use another CSV and run regular sequential discovery/apply
+python main.py --input-data-path data/input/temporal_data.csv
+
+# Recompute patterns with batch-mode parallel discovery and parallel apply
+python main.py --input-data-path data/input/temporal_data.csv --n-workers 4 --force-discover
+
+# Discover patterns only
+python main.py --no-apply-patterns --force-discover
+
+# Apply existing patterns only
+python main.py --no-discover-patterns --apply-patterns
+```
+
+When `--n-workers 1` is used, discovery runs through regular `KarmaLego`.
+When `--n-workers > 1` is used, discovery runs through
+`ParallelRunner.parallel_batches()`. The same worker count is used for the
+patient-level apply phase.
+
 This produces:
 - `data/output/discovered_patterns.csv` - flat table of frequent TIRPs with support and decoded symbols.
 - `data/output/patient_pattern_vectors.ALL.csv` - one row per (PatientId, Pattern) with 5 columns:
@@ -364,7 +385,7 @@ df_patterns = kl.discover_patterns(entity_list, min_length=1, max_length=None)  
 ### Parallel Discover Patterns Across Different Cohorts
 
 ```python
-from core.parallel_runner import run_parallel_jobs
+from core.parallel_runner import ParallelRunner, run_parallel_jobs
 
 # 1. Define your jobs
 # Each job is a dict with 'name', 'data' (entity_list), and 'params'
@@ -396,6 +417,56 @@ jobs = [
 df_all = run_parallel_jobs(jobs, num_workers=4)
 ```
 
+### Batch-Mode Candidate Discovery
+
+For large cohorts, `ParallelRunner.parallel_batches()` can split patients into
+batches, discover candidates per batch, union those candidates, and then
+recompute exact support on the full cohort. The final DataFrame is filtered by
+the global `min_ver_supp`; batch-only false positives are dropped.
+
+```python
+from core.parallel_runner import ParallelRunner
+
+runner = ParallelRunner(max_workers=4)
+df_patterns = runner.parallel_batches(
+    entity_list,
+    params={
+        "epsilon": pd.Timedelta(minutes=1),
+        "max_distance": pd.Timedelta(hours=1),
+        "min_ver_supp": 0.03,
+        "min_length": 2,
+        "max_length": 4,
+    },
+    batch_size=1000,
+)
+```
+
+Batch size matters. Batch discovery uses the same fractional MVS as the full
+run, so the absolute threshold inside each batch is:
+
+```text
+ceil(min_ver_supp * batch_size)
+```
+
+If this value is 1 or 2, many patient-specific patterns become batch-frequent,
+the candidate union can explode, and finalization may become slower than a
+regular single run. Choose a batch size where the absolute threshold is at least
+5-10 patients. Examples:
+
+- `min_ver_supp=0.50`: use `batch_size >= 10-20`
+- `min_ver_supp=0.10`: use `batch_size >= 50-100`
+- `min_ver_supp=0.03`: use `batch_size >= 167-334`
+
+For small cohorts, prefer `--n-workers 1` and regular `KarmaLego` discovery.
+For large cohorts, start with `--batch-size 1000` and a conservative
+`--max-length`, then inspect the `parallel_batches summary` log:
+`batch_patterns` and `unique_candidates` should not be orders of magnitude
+larger than the expected final pattern count.
+
+The finalization phase is also parallelized by candidate chunks. This speeds up
+large candidate unions, but each finalization worker needs access to the full
+entity list, so avoid using more workers than your RAM can support.
+
 ### Apply to Patients
 
 ```python
@@ -405,7 +476,8 @@ rep_to_str = {(tuple(t.symbols), tuple(t.relations)): s for t, s in zip(df_patte
 pattern_keys = [(tuple(t.symbols), tuple(t.relations)) for t in df_patterns["tirp_obj"]]
 
 vec_count_ul = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
-                                             mode="tirp-count", count_strategy="unique_last")
+                                             mode="tirp-count", count_strategy="unique_last",
+                                             n_jobs=1)
 vec_count_all = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
                                               mode="tirp-count", count_strategy="all")
 vec_tpf_dist_ul = kl.apply_patterns_to_entities(entity_list, df_patterns, patient_ids,
@@ -431,7 +503,9 @@ for pid in patient_ids:
 import pandas as pd
 pd.DataFrame(rows).to_csv("data/output/patient_pattern_vectors.ALL.csv", index=False)
 ```
->> This block can be parallelized on a patient level or on a function level, but since it's usage can change between works, I see no point in adding a single parallelism method to the module. Feel free to extend.
+`apply_patterns_to_entities(..., n_jobs=N)` enables patient-level process
+parallelism for the apply phase. The progress bar is owned by the parent process
+and advances per patient; use `show_progress=False` to disable it.
 ---
 
 ## Unit-Testing
@@ -489,6 +563,60 @@ Wide long format: one row per (PatientId, Pattern) with the following columns:
 - Tune `min_ver_supp` to control pattern explosion vs sensitivity.
 - If memory is tight on extremely dense data, consider limiting `max_k` or post-processing horizontal support to non-overlapping counts; CSAC itself preserves correctness but can retain many embeddings per entity for highly frequent TIRPs.
 
+### Parallelism and RAM
+
+`--n-workers` controls both batch-mode discovery and patient-level apply. More
+workers can improve wall time, but process-based parallelism duplicates working
+data across processes, especially on Windows where workers are spawned rather
+than forked.
+
+Practical starting points:
+
+- Small cohort or exploratory run: `--n-workers 1`
+- Workstation with 16-32 GB RAM: start with `--n-workers 2`
+- Workstation/server with 64+ GB RAM: start with `--n-workers 4`
+- Increase beyond 4 only after checking RAM usage and candidate counts.
+
+For batch discovery, `--batch-size` is usually more important than worker count.
+The batch absolute support threshold is:
+
+```text
+ceil(min_ver_supp * batch_size)
+```
+
+Keep this value at least `5-10`. If it is `1-2`, batch discovery will emit many
+patient-specific false-positive candidates, and finalization can dominate the
+run. Example starting points:
+
+```bash
+# conservative large-cohort start
+python main.py --n-workers 4 --batch-size 1000 --max-length 3 --force-discover
+
+# lower-RAM machine
+python main.py --n-workers 2 --batch-size 1000 --max-length 3 --force-discover
+```
+
+Finalization is parallelized by candidate chunks, but each finalization worker
+needs access to the full `entity_list`. If the `Finalizing candidate chunks`
+phase is fast but RAM spikes, reduce `--n-workers`. If it is slow and RAM is
+stable, increasing workers may help.
+
+Apply-mode parallelism also gives each worker the pattern list and patient data
+needed for its patient chunk. For very large pattern sets, apply can become
+memory-heavy too. If apply slows down or RAM pressure is high, prefer
+`--n-workers 1-2` for apply-scale runs, or run discovery first and apply later
+with a smaller worker count.
+
+Use the `parallel_batches summary` log as a health check:
+
+- `min_abs_supports` should generally be `>= 5`
+- `batch_patterns` should not be wildly imbalanced across batches
+- `unique_candidates` should not be orders of magnitude larger than the final
+  number of patterns
+
+If those checks look bad, increase `--batch-size`, lower `--n-workers`, raise
+`--min-ver-supp`, or reduce `--max-length`.
+
 ### Memory Limitations & Capacity Planning
 
 This implementation is **entirely in-memory**. The raw data (`entity_list`), the pattern tree, and the CSAC embedding maps (which store valid index-tuples for every active pattern) all reside in RAM.
@@ -533,7 +661,15 @@ If your data exceeds these limits, **do not run as a single job**.
 2. **Run in parallel:** Use the `run_parallel_jobs` utility to process chunks independently.
 3. **Merge results:** Concatenate the resulting pattern DataFrames.
 
->> Note that a split based on subsets of patients should not be very efficient, as the in-memory tree might grow roughly to the same size. Only the process itself might be faster, but the memory usage should not be affected.
+For patient-based splitting, use `ParallelRunner.parallel_batches()` rather than
+manual concatenation. It treats batch discovery as candidate generation and then
+recomputes exact global support before returning final patterns.
+
+---
+
+## Credits
+
+- Batch multiprocessing candidate discovery and finalization were added from an implementation idea by [@nadavbiton](https://github.com/nadavbiton).
 
 ---
 
