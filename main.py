@@ -16,15 +16,18 @@ if __name__ == "__main__":
     )
     from core.karmalego import KarmaLego, TIRP
 
+    input_dir = "data/input"
+    output_dir = "data/output"
+    os.makedirs(output_dir, exist_ok=True)
 
     # 1. Load (can swap to dask.read_csv if large)
-    df = pd.read_csv("data/synthetic_diabetes_temporal_data.csv")
+    df = pd.read_csv(os.path.join(input_dir, "synthetic_diabetes_temporal_data.csv"))
 
     # 2. Validate
     validate_input(df)
 
     # 3. Build mapping (concept+value -> symbol)
-    symbol_map, _ = build_or_load_mappings(df, mapping_dir="data", reuse=True)
+    symbol_map, _ = build_or_load_mappings(df, mapping_dir=output_dir, reuse=True)
 
     # 4. Preprocess
     preprocessed = preprocess_dataframe(df, symbol_map)
@@ -38,7 +41,7 @@ if __name__ == "__main__":
                 min_ver_supp=0.5,
                 num_relations=7)
 
-    patterns_path = "data/discovered_patterns.csv"
+    patterns_path = os.path.join(output_dir, "discovered_patterns.csv")
 
     # 6. Discover once or load from disk
     if os.path.exists(patterns_path):
@@ -69,7 +72,7 @@ if __name__ == "__main__":
     # Keep a stable order
     pattern_keys = [(tuple(t.symbols), tuple(t.relations)) for t in patterns_tirps]
 
-    # 8. Apply – compute 5 columns
+    # 8. Apply - compute 5 columns
     vec_count_ul = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
                                                 mode="tirp-count", count_strategy="unique_last")
     vec_count_all = kl.apply_patterns_to_entities(entity_list, patterns_tirps, patient_ids,
@@ -96,4 +99,4 @@ if __name__ == "__main__":
             })
 
     out_df = pd.DataFrame(rows)
-    out_df.to_csv("data/patient_pattern_vectors.ALL.csv", index=False)
+    out_df.to_csv(os.path.join(output_dir, "patient_pattern_vectors.ALL.csv"), index=False)

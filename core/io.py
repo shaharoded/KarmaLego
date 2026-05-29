@@ -42,11 +42,11 @@ def _parse_datetime_to_ns(series: pd.Series) -> Optional[pd.Series]:
     nat_count = int(best.isna().sum())
 
     if nat_count == len(series):
-        # Nothing looked like a date at all → signal: try numeric
+        # Nothing looked like a date at all -> signal: try numeric
         return None
 
     if nat_count > 0:
-        # Partially parseable → raise with examples so data can be fixed upstream
+        # Partially parseable -> raise with examples so data can be fixed upstream
         bad = series[best.isna()].head(5)
         raise ValueError(
             "Datetime parsing succeeded for some rows but failed for others. "
@@ -54,15 +54,15 @@ def _parse_datetime_to_ns(series: pd.Series) -> Optional[pd.Series]:
             f"{bad}"
         )
 
-    # Full success → return int64 nanoseconds
+    # Full success -> return int64 nanoseconds
     return best.astype("int64")
 
 
 def _normalize_time_series(series: pd.Series) -> pd.Series:
     """
     Convert a time column to int64:
-      - Datetime-like or date-like strings → int64 nanoseconds
-      - Fully numeric → int64 (no scaling)
+      - Datetime-like or date-like strings -> int64 nanoseconds
+      - Fully numeric -> int64 (no scaling)
     """
     # Already datetime-like?
     if pd.api.types.is_datetime64_any_dtype(series):
@@ -73,7 +73,7 @@ def _normalize_time_series(series: pd.Series) -> pd.Series:
         parsed = _parse_datetime_to_ns(series)
         if parsed is not None:
             return parsed
-        # else: nothing looked like a date → treat as numeric below
+        # else: nothing looked like a date -> treat as numeric below
 
     # Numeric path (no scaling)
     numeric = pd.to_numeric(series, errors="coerce")
@@ -116,7 +116,7 @@ def build_or_load_mappings(
     df: Union[pd.DataFrame, dd.DataFrame],
     concept_col: str = "ConceptName",
     value_col: str = "Value",
-    mapping_dir: str = ".",
+    mapping_dir: str = "data/output",
     reuse: bool = True,
 ) -> Tuple[Dict[str, int], Dict[int, str]]:
     """

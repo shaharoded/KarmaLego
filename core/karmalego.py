@@ -1,5 +1,6 @@
 import bisect
 import logging
+import os
 from functools import wraps
 from collections import defaultdict
 from tqdm import tqdm
@@ -364,13 +365,13 @@ class TIRP:
         longest_symbol_name_len = len(max(self.symbols, key=len))
         longest_symbol_name_len_1 = len(max(self.symbols[:-1], key=len))
 
-        print('\n\n', ' ' * longest_symbol_name_len_1, '‖', '   '.join(self.symbols[1:]))
+        print('\n\n', ' ' * longest_symbol_name_len_1, '||', '   '.join(self.symbols[1:]))
         print('=' * (sum(len(s) for s in self.symbols[1:]) + longest_symbol_name_len_1 + 3 * len(self.symbols)))
 
         start_index = 0
         increment = 2
         for row_id in range(len(self.symbols) - 1):
-            print(self.symbols[row_id], ' ' * (longest_symbol_name_len_1 - len(self.symbols[row_id])), '‖ ', end='')
+            print(self.symbols[row_id], ' ' * (longest_symbol_name_len_1 - len(self.symbols[row_id])), '|| ', end='')
 
             row_increment = row_id + 1
             index = start_index
@@ -396,8 +397,8 @@ class TIRP:
         """
         Compute and update vertical support for this TIRP over the provided entity list.
         Optimized to use parent embeddings for guided search (Forward Pruning).
-        “Given the set of entities (patients), how many of them contain this pattern 
-        (with the right symbol order and temporal relations)?”
+        "Given the set of entities (patients), how many of them contain this pattern
+        (with the right symbol order and temporal relations)?"
 
         This method:
           * Optionally restricts search to the parent-supported subset of entities (SAC-style pruning).
@@ -443,7 +444,7 @@ class TIRP:
         # compute them once here rather than repeating the work on every entity iteration.
         _ge_target_symbol = None      # new symbol being appended
         _ge_rels_to_check = None      # relations from all k-1 prev positions to the new symbol
-        _ge_l2_eid_map    = None      # {eid: {pos_A → [pos_B, ...]}} for the direct last pair
+        _ge_l2_eid_map    = None      # {eid: {pos_A -> [pos_B, ...]}} for the direct last pair
         _ge_check_count   = None      # relations to verify per candidate (one less than total;
                                       # the last pair is always pre-verified by the index)
         if use_guided_extension:
@@ -495,7 +496,7 @@ class TIRP:
                 check_count   = _ge_check_count
                 parent_embeddings = self.parent_embeddings_map.get(orig_idx, [])
 
-                # Per-entity view of the level-2 index: pos_A → [pos_B, ...].
+                # Per-entity view of the level-2 index: pos_A -> [pos_B, ...].
                 # Candidates pulled from here are already relation-verified and CSAC-compliant
                 # (filtered during Karma), so we skip the last relation and CSAC check.
                 l2_pos_dict = _ge_l2_eid_map.get(orig_idx)
@@ -511,7 +512,7 @@ class TIRP:
 
                     for i in candidates_i:
                         # Verify relations from each earlier parent position to new position i.
-                        # check_count == len(rels_to_check) - 1: the last pair (sym[-2]→sym[-1])
+                        # check_count == len(rels_to_check) - 1: the last pair (sym[-2]->sym[-1])
                         # is already verified by the index; only the j earlier pairs remain.
                         all_relations_match = True
                         for j in range(check_count):
@@ -595,8 +596,8 @@ class TIRP:
                 if self.embeddings_map is None:
                     self.embeddings_map = {}
                 
-                # Store embeddings — valid_embeddings_here contains unique tuples by
-                # construction (guided path: distinct parent_tup × unique target positions;
+                # Store embeddings - valid_embeddings_here contains unique tuples by
+                # construction (guided path: distinct parent_tup x unique target positions;
                 # full-search path: check_symbols_lexicographically returns strictly
                 # increasing index sequences). No set deduplication needed.
                 self.embeddings_map[orig_idx] = sorted(valid_embeddings_here)
@@ -637,7 +638,7 @@ class TIRP:
 
 class KarmaLego:
     """
-    Orchestrates the Karma→Lego pattern mining pipeline.
+    Orchestrates the Karma->Lego pattern mining pipeline.
 
     Attributes
     ----------
@@ -681,7 +682,7 @@ class KarmaLego:
 
     @log_execution
     def discover_patterns(
-        self, entity_list, min_length=1, max_length=None, return_tree=False, return_tirps=False, inverse_mapping_path="data/inverse_symbol_map.json"
+        self, entity_list, min_length=1, max_length=None, return_tree=False, return_tirps=False, inverse_mapping_path="data/output/inverse_symbol_map.json"
     ):
         """
         Discover all frequent TIRPs from entity_list and return a flat DataFrame summary (default).
@@ -710,15 +711,18 @@ class KarmaLego:
         tree : TreeNode, optional
             Root of internal pattern tree (if return_tree=True).
         """
-        with open(inverse_mapping_path) as f:
-            inverse_symbol_map = json.load(f)
+        if inverse_mapping_path and os.path.exists(inverse_mapping_path):
+            with open(inverse_mapping_path) as f:
+                inverse_symbol_map = json.load(f)
+        else:
+            inverse_symbol_map = {}
         t0 = time.perf_counter()
 
-        # Phase 1 — sort each entity and build symbol→positions index.
+        # Phase 1 - sort each entity and build symbol->positions index.
         # pairwise_rels is intentionally deferred to Phase 2 (after singleton Karma)
         # so that we only compute pairs for frequent symbols, mirroring the C# lab's
         # _filteredEntities approach.  With ~1250 intervals/patient and max_distance=None
-        # an upfront O(m²) precompute would materialise ~156M dict entries (≈12–15 GB)
+        # an upfront O(m^2) precompute would materialise ~156M dict entries (~12-15 GB)
         # before any frequency filtering has been applied.
         t_pre_start = time.perf_counter()
         precomputed = []
@@ -732,7 +736,7 @@ class KarmaLego:
                                  "symbol_items": symbol_items, "pairwise_rels": {}})
         t_pre_end = time.perf_counter()
 
-        # Karma phase — runs in three internal phases (see Karma.run_karma docstring):
+        # Karma phase - runs in three internal phases (see Karma.run_karma docstring):
         #   A) singleton discovery
         #   B) filter precomputed to frequent symbols; compute pairwise_rels lazily
         #   C) k=2 TIRP construction from filtered pairwise_rels
@@ -743,7 +747,7 @@ class KarmaLego:
         t_karma_end = time.perf_counter()
 
         # Build the level-2 index from Karma's k=2 embeddings for O(1) last-pair
-        # lookup during Lego extension. Cost is O(total k=2 embeddings) — negligible.
+        # lookup during Lego extension. Cost is O(total k=2 embeddings) - negligible.
         level2_index = self._build_level2_index(tree)
 
         # Lego extension
@@ -769,7 +773,7 @@ class KarmaLego:
                 node._cached_subtree_nodes = None
                 stack.extend(node.children)
 
-        # Support set comparison for closed/super flags — O(P) grouping
+        # Support set comparison for closed/super flags - O(P) grouping
         support_sets = [frozenset(t.entity_indices_supporting) for t in filtered]
         ks = [t.k for t in filtered]
 
@@ -787,7 +791,7 @@ class KarmaLego:
         # A pattern is closed  iff no longer pattern shares its identical support set (k == max_k)
         # A pattern is super   iff it is closed AND a shorter pattern shares its support set,
         #                       i.e. it is the longest in its closed equivalence class AND
-        #                       that class contains a proper sub-pattern.  (super ⊆ closed)
+        #                       that class contains a proper sub-pattern.  (super subset closed)
         is_closed = [group[fset][1] == k for fset, k in zip(support_sets, ks)]
         is_super  = [group[fset][0] < k and group[fset][1] == k
                      for fset, k in zip(support_sets, ks)]
@@ -857,7 +861,7 @@ class KarmaLego:
         mode : {"tirp-count","tpf-dist","tpf-duration"}
             - "tirp-count": horizontal support per patient. By default uses 'unique_last':
             counts one occurrence per DISTINCT last-symbol index among valid embeddings.
-            Example: for A…B…A…B…C, pattern A<B<C counts as 1 (not 3).
+            Example: for A...B...A...B...C, pattern A<B<C counts as 1 (not 3).
             Use count_strategy="all" to count every embedding if desired.
             - "tpf-dist": min-max normalize the horizontal support across patients (per pattern) to [0,1].
             - "tpf-duration": for each patient, sum the UNION of embedding spans
@@ -1002,7 +1006,7 @@ class KarmaLego:
             if count_strategy == "all":
                 return len(embeddings)
             elif count_strategy == "unique_last":
-                # Count one per distinct last index → collapses A…B…A…B…C to 1 for A<B<C
+                # Count one per distinct last index -> collapses A...B...A...B...C to 1 for A<B<C
                 return len({t[-1] for t in embeddings})
             else:
                 raise ValueError("count_strategy must be 'unique_last' or 'all'.")
@@ -1032,7 +1036,7 @@ class KarmaLego:
             return int(total)
 
         # ---- Pass 1: compute raw values per patient & pattern ----
-        # Key: (tuple(symbols), tuple(relations)) — a stable tuple that is cheaper than repr(tirp)
+        # Key: (tuple(symbols), tuple(relations)) - a stable tuple that is cheaper than repr(tirp)
         # (no float formatting) and correct (repr used to embed vertical_support, making two
         # structurally identical patterns from different runs collide or diverge incorrectly).
         need_norm = mode in ("tpf-dist", "tpf-duration")
@@ -1067,7 +1071,7 @@ class KarmaLego:
         #   - 0  if any patient is missing (they contribute 0 implicitly), which is the common case.
         #   - mins[key]  if every patient has a hit (hit_count == n_patients).
         # When effective_min == max (no variation across the cohort), result is 0 by convention.
-        # This is O(#hits) — no per-pattern full-cohort scan needed.
+        # This is O(#hits) - no per-pattern full-cohort scan needed.
         if need_norm:
             for pid in patient_ids:
                 if not values[pid]:
@@ -1094,7 +1098,7 @@ class KarmaLego:
         this index. That invariant is what makes the optimisation correct without
         any re-verification.
 
-        Cost is O(total k=2 embeddings) — negligible relative to Karma.
+        Cost is O(total k=2 embeddings) - negligible relative to Karma.
 
         Parameters
         ----------
@@ -1135,30 +1139,30 @@ class Karma(KarmaLego):
         Karma phase: discover frequent singletons and all length-2 TIRPs.
 
         Internally runs in three sequential phases to keep memory usage bounded on
-        large datasets (e.g. ≥1 000 intervals/entity with ``max_distance=None``).
+        large datasets (e.g. >=1 000 intervals/entity with ``max_distance=None``).
 
-        **Phase A — Singleton discovery**
+        **Phase A - Singleton discovery**
 
         Iterates all distinct symbols across ``entity_list``, computes vertical support
         from each entity's ``symbol_index``, and builds frequent singleton TIRPs.
-        Produces the ``frequent_symbols`` whitelist and a ``symbol → TreeNode`` map.
+        Produces the ``frequent_symbols`` whitelist and a ``symbol -> TreeNode`` map.
         At this stage ``precomputed[*]["pairwise_rels"]`` is empty; the pair relation
         dict is intentionally deferred until after frequency filtering.
 
-        **Phase B — Lazy pairwise precomputation**
+        **Phase B - Lazy pairwise precomputation**
 
         Filters each entity's 'symbol_index' (and 'symbol_items') to the
         frequent symbols found in Phase A, then computes 'pairwise_rels'
         by iterating only the sorted positions of surviving-symbol intervals.
 
-        Without this split, an upfront O(m²) scan over all symbols would
+        Without this split, an upfront O(m^2) scan over all symbols would
         materialise the full pairwise relation dict before any frequency filtering.
         On large datasets this reaches ~156 M entries (~12-15 GB).
         Restricting both loops to frequent-symbol positions reduces that by one to two
         orders of magnitude. The 'max_distance' early-break is still effective
         because the positions are lexicographically sorted.
 
-        **Phase C — k=2 TIRP construction**
+        **Phase C - k=2 TIRP construction**
 
         Consumes the now-populated ``pairwise_rels`` to build all frequent length-2
         TIRPs (with CSAC filtering) and attaches them as children of the corresponding
@@ -1172,10 +1176,10 @@ class Karma(KarmaLego):
             Per-entity dicts with keys:
 
             'sorted'        - lexicographically sorted intervals.
-            'symbol_index'  - symbol → list[int] positions; mutated in-place
+            'symbol_index'  - symbol -> list[int] positions; mutated in-place
                               during Phase B to retain frequent symbols only.
             'symbol_items'  - tuple view of symbol_index; rebuilt in Phase B.
-            'pairwise_rels' - dict (i, j) → rel; empty on entry, populated by
+            'pairwise_rels' - dict (i, j) -> rel; empty on entry, populated by
                               Phase B, and consumed by Phase C.
 
         Returns
@@ -1242,8 +1246,8 @@ class Karma(KarmaLego):
         #          relations for frequent-symbol interval pairs only.          #
         # ------------------------------------------------------------------ #
         # By restricting both loops to surviving-symbol positions the dict
-        # stays proportional to |frequent_symbols|² × n_entities rather than
-        # the full O(m²) per entity.  The early-break exploits lexicographic
+        # stays proportional to |frequent_symbols|^2 x n_entities rather than
+        # the full O(m^2) per entity.  The early-break exploits lexicographic
         # sort: once start_j - end_i > max_distance, all subsequent j are also
         # out of range and the inner loop terminates immediately.
         for entry in precomputed:
@@ -1303,7 +1307,7 @@ class Karma(KarmaLego):
         Parameters
         ----------
         entity_list : list
-            Full entity list — used as the vertical-support denominator.
+            Full entity list - used as the vertical-support denominator.
         precomputed : list of dict
             Per-entity dicts; 'pairwise_rels' must already be populated.
         tree : TreeNode
@@ -1390,7 +1394,7 @@ class Lego(KarmaLego):
         self.tree = tree
         super().__init__(epsilon, max_distance, min_ver_supp, num_relations=num_relations)
         self.show_detail = show_detail  # whether to keep per-extension verbosity
-        # Level-2 index: (sym_A, sym_B, rel) → {eid → {pos_A → [pos_B, ...]}}.
+        # Level-2 index: (sym_A, sym_B, rel) -> {eid -> {pos_A -> [pos_B, ...]}}.
         # Eliminates the last relation check and last CSAC check in the guided
         # extension path, replacing a bisect scan with an O(1) grouped lookup.
         self.level2_index = level2_index
@@ -1436,7 +1440,7 @@ class Lego(KarmaLego):
                     return
 
                 if tirp.k == 1:
-                    # Singletons are not extended here — Karma already built all k=2 pairs.
+                    # Singletons are not extended here - Karma already built all k=2 pairs.
                     tirp.embeddings_map = None
                     for child in current.children:
                         _dfs(child)
@@ -1492,7 +1496,7 @@ class Lego(KarmaLego):
         if not getattr(tirp, "embeddings_map", None):
             raise RuntimeError("Lego extension requires embeddings_map for CSAC; legacy path disabled.")
 
-        # Lazy generator — avoids materialising the full list of (sym_index, ent_index, tup)
+        # Lazy generator - avoids materialising the full list of (sym_index, ent_index, tup)
         # triples, which can be large when a pattern has high support across many entities.
         sources = (
             (tup[-1], ent_index, tup)
@@ -1501,7 +1505,7 @@ class Lego(KarmaLego):
         )
 
         # Within a single all_extensions call, tirp.relations / curr_rel_index / decrement_index
-        # are all fixed — only rel_last_new varies. Cache the path-tree result keyed on
+        # are all fixed - only rel_last_new varies. Cache the path-tree result keyed on
         # rel_last_new so repeated values (common when many source pairs share the same
         # last relation) pay the backtracking cost only once. At most num_relations entries.
         _base_rel_index = len(tirp.relations) - 1
@@ -1510,8 +1514,8 @@ class Lego(KarmaLego):
 
         # Level-2 upper-bound filter: for each (new_symbol, rel_last_new) pair encountered,
         # verify that enough parent-supporting entities have this k=2 sub-pattern in the index.
-        # If the index has no entry at all → Apriori violation, guaranteed infrequent.
-        # If the entity overlap count is below threshold → structurally impossible to meet MVS.
+        # If the index has no entry at all -> Apriori violation, guaranteed infrequent.
+        # If the entity overlap count is below threshold -> structurally impossible to meet MVS.
         # Both cases are cached after first evaluation so the check is O(1) on repeat encounters.
         sym_A = tirp.symbols[-1]
         parent_support_set = set(tirp.entity_indices_supporting)

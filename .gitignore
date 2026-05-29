@@ -23,3 +23,6 @@ venv/
 # Temporal files
 nadav_test.csv
 karmalego-deploy.zip
+context_data.csv
+qa_data.csv
+temporal_data.csv

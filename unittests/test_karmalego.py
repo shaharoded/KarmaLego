@@ -90,7 +90,7 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
     )
     assert applied_count_all == applied_count_ul
 
-    # ---- Apply: tpf-dist (min–max across cohort per pattern) ----
+    # ---- Apply: tpf-dist (min-max across cohort per pattern) ----
     applied_tpf_dist = kl.apply_patterns_to_entities(
         entities, df, patient_ids, mode="tpf-dist", count_strategy="unique_last"
     )
@@ -107,19 +107,19 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
     assert applied_tpf_dist["p1"].get(_key(tA_C_before), 0.0) == 0.0
     assert applied_tpf_dist["p2"].get(_key(tA_C_before), 0.0) == 0.0
 
-    # Singletons: A appears in all 3 patients with count=1 → min=max → normalized to 0.0 per our rule
+    # Singletons: A appears in all 3 patients with count=1 -> min=max -> normalized to 0.0 per our rule
     assert applied_tpf_dist["p1"].get(_key(tA), 0.0) == 0.0
     assert applied_tpf_dist["p2"].get(_key(tA), 0.0) == 0.0
     assert applied_tpf_dist["p3"].get(_key(tA), 0.0) == 0.0
-    # B appears in p1 & p2 only -> [1,1,0] → normalized [1,1,0]
+    # B appears in p1 & p2 only -> [1,1,0] -> normalized [1,1,0]
     assert applied_tpf_dist["p1"].get(_key(tB), 0.0) == 1.0
     assert applied_tpf_dist["p2"].get(_key(tB), 0.0) == 1.0
     assert applied_tpf_dist["p3"].get(_key(tB), 0.0) == 0.0
-    # C appears only in p3 -> [0,0,1] → normalized [0,0,1]
+    # C appears only in p3 -> [0,0,1] -> normalized [0,0,1]
     assert applied_tpf_dist["p1"].get(_key(tC), 0.0) == 0.0
     assert applied_tpf_dist["p2"].get(_key(tC), 0.0) == 0.0
     assert applied_tpf_dist["p3"].get(_key(tC), 0.0) == 1.0
-    # ---- Apply: tpf-duration (union span per patient, then min–max per pattern) ----
+    # ---- Apply: tpf-duration (union span per patient, then min-max per pattern) ----
     applied_tpf_dur = kl.apply_patterns_to_entities(
         entities, df, patient_ids, mode="tpf-duration", count_strategy="unique_last"
     )
@@ -136,7 +136,7 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
     assert applied_tpf_dur["p1"].get(_key(tA_C_before), 0.0) == 0.0
     assert applied_tpf_dur["p2"].get(_key(tA_C_before), 0.0) == 0.0
 
-    # Singletons: spans then per-pattern min–max
+    # Singletons: spans then per-pattern min-max
     # A spans: [1, 2, 1] -> [0.0, 1.0, 0.0]
     assert applied_tpf_dur["p1"].get(_key(tA), 0.0) == pytest.approx(0.0)
     assert applied_tpf_dur["p2"].get(_key(tA), 0.0) == pytest.approx(1.0)
@@ -154,7 +154,7 @@ def test_full_pipeline_and_apply_modes(simple_patient_entities):
 
 def test_count_strategy_unique_last_vs_all_for_ABC_case():
     """
-    Single patient with A…B…A…B…C.
+    Single patient with A...B...A...B...C.
     For pattern A<B<C:
       - unique_last should count 1
       - all should count 3

@@ -20,7 +20,7 @@ KarmaLego first scans each patient's timeline to identify pairwise **Allen relat
   <img src="images/temporal_relations.png" alt="Temporal Relations Matrix" width="60%">
 </p>
 
-Each cell in the matrix shows the temporal relation between intervals (e.g., `A¹ o B¹` = A¹ overlaps B¹). These relations become the building blocks of complex temporal patterns.
+Each cell in the matrix shows the temporal relation between intervals (e.g., `A^1 o B^1` = A^1 overlaps B^1). These relations become the building blocks of complex temporal patterns.
 
 ---
 
@@ -28,7 +28,7 @@ Each cell in the matrix shows the temporal relation between intervals (e.g., `A�
 
 Patterns are built incrementally by traversing a **tree of symbol and relation extensions**, starting from frequent 1-intervals (K=1) and growing to longer TIRPs (K=2,3,...). Only frequent patterns are expanded (Apriori pruning), and relation consistency is ensured using transitivity rules.
 
-Practical flow in this implementation. The pipeline enumerates singletons and all frequent pairs (k=2) in the Karma stage. The Lego stage then skips extending singletons and starts from k≥2, extending patterns to length k+1. This avoids regenerating pairs (and their support checks) a second time. I also apply CSAC (see below), which anchors each extension on the actual parent embeddings inside each entity, ensuring only consistent child embeddings are considered.
+Practical flow in this implementation. The pipeline enumerates singletons and all frequent pairs (k=2) in the Karma stage. The Lego stage then skips extending singletons and starts from k>=2, extending patterns to length k+1. This avoids regenerating pairs (and their support checks) a second time. I also apply CSAC (see below), which anchors each extension on the actual parent embeddings inside each entity, ensuring only consistent child embeddings are considered.
 
 <p align="center">
   <img src="images/karmalego_tree.png" alt="KarmaLego Pattern Extension Tree" width="80%" height="80%">
@@ -98,7 +98,7 @@ The design goals are: **clarity, performance, testability, and reproducibility**
 This implementation incorporates several core performance techniques from the KarmaLego framework:
 
 1. **Apriori pruning:**
-Patterns are extended only if all their (k−1)-subpatterns are frequent, cutting unpromising branches early.
+Patterns are extended only if all their (k-1)-subpatterns are frequent, cutting unpromising branches early.
 
 2. **Temporal relation transitivity (+ memoization):**
 Allen relation composition reduces relation search at extension time; the `compose_relation()` function is memoized to eliminate repeated small-table lookups.
@@ -106,10 +106,10 @@ Allen relation composition reduces relation search at extension time; the `compo
 3. **SAC (Subset of Active Candidates):**
 Support checks for a child TIRP are restricted to the entities that supported its parent, avoiding scans of unrelated entities at deeper levels.
 
-4. **CSAC (Consistent SAC) — two enforced constraints:**
+4. **CSAC (Consistent SAC) - two enforced constraints:**
 
    **4a. Embedding-level consistency:**  
-   The exact parent embeddings (index tuples) per entity are tracked. Each child embedding at level k+1 must directly extend a valid parent embedding at level k — no independent full-search is re-run for k>1 patterns. This is the "consistent" part: embeddings grow incrementally and only along verified paths.
+   The exact parent embeddings (index tuples) per entity are tracked. Each child embedding at level k+1 must directly extend a valid parent embedding at level k - no independent full-search is re-run for k>1 patterns. This is the "consistent" part: embeddings grow incrementally and only along verified paths.
 
    **4b. Adjacency constraint (same-concept interposer check):**  
    For any pair of positions `(i, j)` in an embedding where the relation is an ordering type (e.g. `<`, `m`, or `p` depending on the relation alphabet), no other occurrence of the **same concept** is permitted to exist between positions `i` and `j` in the entity. This is the core SAC definition from the paper.  
@@ -118,52 +118,52 @@ Support checks for a child TIRP are restricted to the entities that supported it
    - **Lego extension (k>2):** After relation matching, all new ordering pairs introduced by the extension are checked for interposers before the extended embedding is accepted.
 
    The ordering relation set is **relation-table-aware** via `get_sac_relations()`:  
-   `{'<','m'}` for 7R · `{'<'}` for 5R and 3R · `{'p'}` for 2R.
+   `{'<','m'}` for 7R * `{'<'}` for 5R and 3R * `{'p'}` for 2R.
 
    - **Accuracy:** identical to a full exhaustive search with the same constraint applied; CSAC is pruning + constraint enforcement, not an approximation.
    - **Speed:** large savings in dense timelines by skipping impossible extensions and non-adjacent embeddings early.
 
 5. **Skip duplicate pair generation:**
-Pairs (k=2) are produced once in Karma and not re-generated in Lego. This eliminates ~×2 duplication for pairs and can reduce Lego runtime dramatically.
+Pairs (k=2) are produced once in Karma and not re-generated in Lego. This eliminates ~x2 duplication for pairs and can reduce Lego runtime dramatically.
 
 6. **Level-2 index for O(1) last-pair lookup during Lego extension:**
 
    After Karma finishes, a *level-2 index* is built from the frequent k=2 TIRP embeddings:
 
    ```
-   (sym_A, sym_B, rel) → { eid → { pos_A → [pos_B, ...] } }
+   (sym_A, sym_B, rel) -> { eid -> { pos_A -> [pos_B, ...] } }
    ```
 
-   During Lego extension of a k-length TIRP to k+1, the bottleneck step is finding all positions of the new symbol that have the *correct relation to the last parent position* (sym[-2] → sym[-1], same entity). Without the index this requires a bisect scan over all positions of that symbol, followed by a `pairwise_rels` look-up per candidate.  
+   During Lego extension of a k-length TIRP to k+1, the bottleneck step is finding all positions of the new symbol that have the *correct relation to the last parent position* (sym[-2] -> sym[-1], same entity). Without the index this requires a bisect scan over all positions of that symbol, followed by a `pairwise_rels` look-up per candidate.  
    With the index, the lookup is:
 
    ```python
    candidates = level2_index[(sym_A, sym_B, rel)][eid].get(parent_last_pos, ())
    ```
 
-   — a dict look-up that returns only pre-verified candidates in **O(1)**, with no failed bisect steps.
+   - a dict look-up that returns only pre-verified candidates in **O(1)**, with no failed bisect steps.
 
    **Interaction with CSAC:**  
    The k=2 embeddings stored in the index were already CSAC-filtered during Karma (the adjacency / interposer check was applied before each embedding was stored). Therefore, for any candidate retrieved from the index, the last pair's relation *and* CSAC constraint are already guaranteed. Only the relations from earlier parent positions to the new position still need to be verified. This saves one extra relation look-up *and* one CSAC adjacency scan per candidate, compounding across all entities at every Lego extension step.
 
-   > **Fallback:** `is_above_vertical_support` with `parent_embeddings_map` set always requires a `level2_index` (asserted at entry). If an entity has no index entry for a given `(sym_A, sym_B, rel)` key — meaning Karma found no CSAC-valid pair for it — the entity is skipped immediately via `continue` rather than scanning. Any candidate a bisect scan could produce would fail the same relation or CSAC check that excluded it from the index, so the skip is safe and avoids entering the parent-embedding loop entirely.
+   > **Fallback:** `is_above_vertical_support` with `parent_embeddings_map` set always requires a `level2_index` (asserted at entry). If an entity has no index entry for a given `(sym_A, sym_B, rel)` key - meaning Karma found no CSAC-valid pair for it - the entity is skipped immediately via `continue` rather than scanning. Any candidate a bisect scan could produce would fail the same relation or CSAC check that excluded it from the index, so the skip is safe and avoids entering the parent-embedding loop entirely.
 
-7. **Two-phase Karma to avoid upfront O(m²) pairwise materialisation:**
+7. **Two-phase Karma to avoid upfront O(m^2) pairwise materialisation:**
 
-   On large datasets (e.g. ≥1 000 intervals/entity with `max_distance=None`), computing pairwise temporal relations for *all* symbol pairs before any frequency filtering produces an O(m²) dict.  At ~1 250 intervals/patient this reaches ~156 M entries (≈12–15 GB) — infeasible before a single TIRP has been evaluated.
+   On large datasets (e.g. >=1 000 intervals/entity with `max_distance=None`), computing pairwise temporal relations for *all* symbol pairs before any frequency filtering produces an O(m^2) dict.  At ~1 250 intervals/patient this reaches ~156 M entries (~12-15 GB) - infeasible before a single TIRP has been evaluated.
 
    `run_karma` therefore splits into three internal phases:
 
-   - **Phase A — Singleton discovery:** Iterates all distinct symbols, computes vertical support from `symbol_index`, and produces `frequent_symbols`. `pairwise_rels` starts empty; no pair relations are computed yet.
-   - **Phase B — Lazy pairwise precomputation:** Filters each entity's `symbol_index` to frequent symbols only, then computes `pairwise_rels` by iterating only the sorted positions of surviving-symbol intervals.  Both the inner and outer loops are restricted to frequent-symbol positions, so the result is proportional to `|frequent_symbols|² × n_entities` rather than `m²`.  The `max_distance` early-break remains effective because positions are lexicographically sorted.
-   - **Phase C — k=2 TIRP construction:** Consumes the now-populated `pairwise_rels` to build frequent length-2 TIRPs (with CSAC filtering) and attach them to the singleton tree.
+   - **Phase A - Singleton discovery:** Iterates all distinct symbols, computes vertical support from `symbol_index`, and produces `frequent_symbols`. `pairwise_rels` starts empty; no pair relations are computed yet.
+   - **Phase B - Lazy pairwise precomputation:** Filters each entity's `symbol_index` to frequent symbols only, then computes `pairwise_rels` by iterating only the sorted positions of surviving-symbol intervals.  Both the inner and outer loops are restricted to frequent-symbol positions, so the result is proportional to `|frequent_symbols|^2 x n_entities` rather than `m^2`.  The `max_distance` early-break remains effective because positions are lexicographically sorted.
+   - **Phase C - k=2 TIRP construction:** Consumes the now-populated `pairwise_rels` to build frequent length-2 TIRPs (with CSAC filtering) and attach them to the singleton tree.
 
    The three phases are encapsulated in a single `Karma.run_karma(entity_list, precomputed)` call; sub-phase timings are logged at DEBUG level.  `discover_patterns` sees only one unified Karma timing.
 
    **Why not single-pass?** A single pass is feasible on small datasets (few symbols, small `max_distance`), but breaks down when the unfiltered pairwise dict exceeds available RAM.  The two-phase split is strictly better for production-scale data; on small benchmarks overhead is negligible.
 
 8. **Precomputed per-entity views (reused everywhere):**
-Lexicographic sorting and symbol→positions maps are built once and reused in support checks and extension, avoiding repeat work.
+Lexicographic sorting and symbol->positions maps are built once and reused in support checks and extension, avoiding repeat work.
 
 9. **Integer time arithmetic:**
 Timestamps are held as `int64`; relation checks use pure integer math. If source data were datetimes, they are converted to ns; if they were numeric, they remain your unit.
@@ -172,7 +172,7 @@ Timestamps are held as `int64`; relation checks use pure integer math. If source
 
     The Lego extension phase uses recursive DFS rather than a BFS queue. Under BFS, all k=n patterns with their `embeddings_map` dicts live in memory simultaneously before any k=n+1 work begins; on datasets with wide pattern trees this can become several times the working set size of a single depth level.
 
-    With DFS, a pattern's `embeddings_map` is freed immediately after its children have consumed it (each child calls `is_above_vertical_support`, which reads from `parent_embeddings_map`, then clears it). At any moment, only the embeddings along **one active root-to-leaf path** are retained — plus the k=2 embeddings of siblings not yet visited. Peak memory scales with depth × branching-factor-per-node rather than total nodes per level.
+    With DFS, a pattern's `embeddings_map` is freed immediately after its children have consumed it (each child calls `is_above_vertical_support`, which reads from `parent_embeddings_map`, then clears it). At any moment, only the embeddings along **one active root-to-leaf path** are retained - plus the k=2 embeddings of siblings not yet visited. Peak memory scales with depth x branching-factor-per-node rather than total nodes per level.
 
     A secondary benefit is reduced Python GC pressure: fewer large dicts stay alive simultaneously, so garbage collection cycles are less frequent and cheaper. On large runs this has a measurable wall-clock effect even before any memory limit is approached.
 
@@ -186,9 +186,9 @@ Timestamps are held as `int64`; relation checks use pure integer math. If source
     entry["symbol_items"] = tuple(entry["symbol_index"].items())
     ```
 
-    This is an O(n\_entities × n\_symbols) one-time pass performed inside `run_karma` before any pairwise or Lego work begins.  After it, `symbol_items` — the iterable consumed by `all_extensions`'s inner loop — never contains an infrequent symbol, so the per-iteration frequency guard is eliminated entirely.  The savings compound across every DFS node at every depth level.
+    This is an O(n\_entities x n\_symbols) one-time pass performed inside `run_karma` before any pairwise or Lego work begins.  After it, `symbol_items` - the iterable consumed by `all_extensions`'s inner loop - never contains an infrequent symbol, so the per-iteration frequency guard is eliminated entirely.  The savings compound across every DFS node at every depth level.
 
-    Note: `pairwise_rels` is *not* filtered here because it was never computed for infrequent symbols to begin with (Phase B computes it fresh, restricted to frequent-symbol positions only — see item 7).
+    Note: `pairwise_rels` is *not* filtered here because it was never computed for infrequent symbols to begin with (Phase B computes it fresh, restricted to frequent-symbol positions only - see item 7).
 
 These optimizations ensure that KarmaLego runs efficiently on large temporal datasets and scales well as pattern complexity increases.
 
@@ -201,7 +201,7 @@ These optimizations ensure that KarmaLego runs efficiently on large temporal dat
   - Splitting the dataset into concept clusters or patient cohorts and running in parallel across jobs.
   - Using `min_ver_supp` and `max_k` to control pattern explosion.
   - Persisting symbol maps to ensure consistent encoding across runs.
-- No k=1→k=2 in Lego: pairs are already created in Karma; Lego starts from k≥2. This removes structural duplicates and their support checks.
+- No k=1->k=2 in Lego: pairs are already created in Karma; Lego starts from k>=2. This removes structural duplicates and their support checks.
 - DFS memory hygiene: each node's `embeddings_map` is released immediately after all its extensions have been checked for support, before recursing into children. Only the embeddings along the current active path remain live at any point, keeping peak RAM proportional to pattern depth rather than pattern breadth.
 
 ---
@@ -210,27 +210,31 @@ These optimizations ensure that KarmaLego runs efficiently on large temporal dat
 
 ```
 KarmaLego/
-├── core/
-│   ├── __init__.py                             # package marker
-│   ├── karmalego.py                            # algorithmic core: TreeNode, TIRP, KarmaLego/Karma/Lego pipeline
-│   ├── io.py                                   # ingestion / preprocessing / mapping / decoding helpers
-│   ├── relation_table.py                       # temporal relation transition tables and definitions
-│   └── utils.py                                # low-level helpers
-├── data/
-│   ├── synthetic_diabetes_temporal_data.csv    # example input dataset (output from the Mediator)
-│   ├── symbol_map.json                         # saved symbol encoding (concept:value -> int)
-│   └── inverse_symbol_map.json                 # reverse mapping for human-readable decoding
-├── unittests/
-│   ├── test_treenode.py                        # TreeNode behavior
-│   ├── test_tirp.py                            # TIRP equality, support, relation semantics
-│   └── test_karmalego.py                       # core pipeline / small synthetic pattern discovery
-├── main.py                                     # example end-to-end driver / demo script
-├── main.ipynb                                  # example end-to-end driver / demo script (better for VMs)
-├── pyproject.toml                              # editable installation manifest
-├── pytest.ini                                  # pytest configuration
-├── requirements.txt                            # pinned dependencies (pandas, dask, tqdm, pytest, numpy, etc.)
-├── README.md                                   # human-readable version of this document
-└── .gitignore                                  # ignored files for git
++-- core/
+|   +-- __init__.py                             # package marker
+|   +-- karmalego.py                            # algorithmic core: TreeNode, TIRP, KarmaLego/Karma/Lego pipeline
+|   +-- io.py                                   # ingestion / preprocessing / mapping / decoding helpers
+|   +-- relation_table.py                       # temporal relation transition tables and definitions
+|   +-- utils.py                                # low-level helpers
++-- data/
+|   +-- input/
+|   |   +-- synthetic_diabetes_temporal_data.csv # example input dataset
+|   +-- output/
+|       +-- discovered_patterns.csv              # discovered pattern table
+|       +-- patient_pattern_vectors.ALL.csv      # generated patient feature vectors
+|       +-- symbol_map.json                      # saved symbol encoding (concept:value -> int)
+|       +-- inverse_symbol_map.json              # reverse mapping for human-readable decoding
++-- unittests/
+|   +-- test_treenode.py                        # TreeNode behavior
+|   +-- test_tirp.py                            # TIRP equality, support, relation semantics
+|   +-- test_karmalego.py                       # core pipeline / small synthetic pattern discovery
++-- main.py                                     # example end-to-end driver / demo script
++-- ml_pipeline.ipynb                           # example end-to-end driver / demo script (better for VMs)
++-- pyproject.toml                              # editable installation manifest
++-- pytest.ini                                  # pytest configuration
++-- requirements.txt                            # pinned dependencies (pandas, dask, tqdm, pytest, numpy, etc.)
++-- README.md                                   # human-readable version of this document
++-- .gitignore                                  # ignored files for git
 ```
 
 ---
@@ -280,13 +284,13 @@ The provided `main.py` demonstrates the full pipeline:
 
 1. **Load the CSV** (switch to Dask if scaling).
 2. **Validate schema** and required fields.
-3. **Build or load symbol mappings** (`ConceptName:Value` → integer codes).
+3. **Build or load symbol mappings** (`ConceptName:Value` -> integer codes).
 4. **Preprocess**: parse dates, apply mapping.
 5. **Convert to entity_list** (list of per-patient interval sequences).
 6. **Discover patterns** using KarmaLego.
 7. **Decode patterns** back to human-readable symbol strings.
 8. **Apply patterns** to each patient using the apply modes (see below): `tirp-count`, `tpf-dist`, `tpf-duration`.
-9. **Persist outputs:** discovered_patterns.csv and a single wide CSV with five feature columns per pattern.
+9. **Persist outputs:** `data/output/discovered_patterns.csv` and a single wide CSV with five feature columns per pattern.
 
 Example invocation:
 
@@ -295,45 +299,47 @@ python main.py
 ```
 
 This produces:
-- `discovered_patterns.csv` — flat table of frequent TIRPs with support and decoded symbols.
-- `patient_pattern_vectors.ALL.csv` — one row per (PatientId, Pattern) with 5 columns:
+- `data/output/discovered_patterns.csv` - flat table of frequent TIRPs with support and decoded symbols.
+- `data/output/patient_pattern_vectors.ALL.csv` - one row per (PatientId, Pattern) with 5 columns:
     tirp_count_unique_last, tirp_count_all, tpf_dist_unique_last, tpf_dist_all, tpf_duration
 
-You can pivot `patient_pattern_vectors.ALL.csv` to a wide feature matrix for modeling.
+You can pivot `data/output/patient_pattern_vectors.ALL.csv` to a wide feature matrix for modeling.
 
 ---
 
 ## Key Concepts / Parameters
 
 - `epsilon` : temporal tolerance for equality/meet decisions (same unit as your preprocessed timestamps). If source columns were datetimes, they are converted to ns, so you may pass a numeric ns value or a `pd.Timedelta`.
-- `max_distance` : maximum gap between intervals to still consider them related (e.g., 1 hour → `pd.Timedelta(hours=1)`), same unit rule as above.
+- `max_distance` : maximum gap between intervals to still consider them related (e.g., 1 hour -> `pd.Timedelta(hours=1)`), same unit rule as above.
 - `min_ver_supp` : minimum vertical support threshold (fraction of patients that must exhibit a pattern for it to be retained).
 
 ### Apply Modes
 
 - `tirp-count`  
   Horizontal support per patient. Counting strategy:
-  - **unique_last (default):** count **one** occurrence per **distinct last-symbol index** among valid embeddings (e.g., in `A…B…A…B…C`, `A<B<C` counts **1**).
+  - **unique_last (default):** count **one** occurrence per **distinct last-symbol index** among valid embeddings (e.g., in `A...B...A...B...C`, `A<B<C` counts **1**).
   - **all:** count **every embedding**.
 
 - `tpf-dist`  
-  Min–max normalize the `tirp-count` values across the cohort **per pattern** into **[0,1]**.
+  Min-max normalize the `tirp-count` values across the cohort **per pattern** into **[0,1]**.
 
 - `tpf-duration`  
-  For each patient and pattern, take the **union of the pattern’s embedding windows**-each window is the full span from the **start of the first** interval in the embedding to the **end of the last**-so overlapping/touching windows are **merged** and **not** double-counted (gaps inside a window are included). The per-patient total is then **min–max normalized across patients (per pattern)** to **[0,1]**.  
-  *Example:* if `A<B` occurs with windows of 10h and 5h that **don’t overlap**, duration = `10 + 5 = 15`; if the second starts 2h before the first ends, duration = `10 + 5 − 2 = 13`.
+  For each patient and pattern, take the **union of the pattern's windows**-each window is the full span from the **start of the first** interval to the **end of the last** interval in the pattern-so overlapping/touching windows are **merged** and **not** double-counted (gaps inside a window are included). The per-patient total duration (duration where this pattern was active) is then **min-max normalized across patients (per pattern)** to **[0,1]**, creating a relative score.  
+  *Example:* if `A<B` occurs with windows of 10h and 5h that **don't overlap**, duration = `10 + 5 = 15`; if the second starts 2h before the first ends, duration = `10 + 5 - 2 = 13`.
 
+>> Note that all of these apply modes are stable modes, meaning that a change in the number of used patterns will not change their value for a patient. This is important for ML implementations, where feature interdependence is risky. 
+>> Also note that while hospitalizations change in length, a classification feature vector will only be created from patterns emerging from the first K hours, creating "equal denominator" for all patients.
 --- 
 
 ## Support Semantics (Horizontal vs Vertical)
 - **Horizontal support (per entity):** number of embeddings (index-tuples) of the TIRP found in a given entity.  
   **Discovery** counts **all** valid embeddings (standard KarmaLego).  
   **Apply** offers a strategy: **unique_last** (one per distinct last index; default) or **all** (every embedding).  
-  *Example:* In `A…B…A…B…C`, the pattern `A…B…C` has 3 embeddings; discovery counts 3 `(A₀,B₁,C₄)`, `(A₀,B₃,C₄)`, `(A₂,B₃,C₄)`, while `tirp-count` with `unique_last` counts 1.
+  *Example:* In `A...B...A...B...C`, the pattern `A...B...C` has 3 embeddings; discovery counts 3 `(A_0,B_1,C_4)`, `(A_0,B_3,C_4)`, `(A_2,B_3,C_4)`, while `tirp-count` with `unique_last` counts 1.
 
 - **Vertical support (dataset level):** fraction of entities that have at least one embedding of the TIRP.
 
-If you prefer “non-overlapping” or “one-per-window” counts for downstream modeling, compute that in the apply phase without changing discovery (a toggle can be added there).
+If you prefer "non-overlapping" or "one-per-window" counts for downstream modeling, compute that in the apply phase without changing discovery (a toggle can be added there).
 
 ---
 
@@ -394,7 +400,7 @@ df_all = run_parallel_jobs(jobs, num_workers=4)
 
 ```python
 # Build all 5 feature columns in one CSV
-# Keys are (tuple(symbols), tuple(relations)) — stable, cheaper than repr, and correct
+# Keys are (tuple(symbols), tuple(relations)) - stable, cheaper than repr, and correct
 rep_to_str = {(tuple(t.symbols), tuple(t.relations)): s for t, s in zip(df_patterns["tirp_obj"], df_patterns["tirp_str"])}
 pattern_keys = [(tuple(t.symbols), tuple(t.relations)) for t in df_patterns["tirp_obj"]]
 
@@ -423,7 +429,7 @@ for pid in patient_ids:
         })
 
 import pandas as pd
-pd.DataFrame(rows).to_csv("data/patient_pattern_vectors.ALL.csv", index=False)
+pd.DataFrame(rows).to_csv("data/output/patient_pattern_vectors.ALL.csv", index=False)
 ```
 >> This block can be parallelized on a patient level or on a function level, but since it's usage can change between works, I see no point in adding a single parallelism method to the module. Feel free to extend.
 ---
@@ -448,7 +454,7 @@ The `-s` flag shows pattern printouts and progress bars for debugging.
 
 ## Outputs
 
-### Patterns DataFrame (`discovered_patterns.csv`)
+### Patterns DataFrame (`data/output/discovered_patterns.csv`)
 Contains:
 - `symbols` (tuple of encoded ints)
 - `relations` (tuple of temporal relation codes)
@@ -460,15 +466,15 @@ Contains:
 - `tirp_obj` (internal object; drop before sharing)
 - `symbols_readable` (if decoded)
 
-### Patient Pattern Vectors (`patient_pattern_vectors.ALL.csv`)
+### Patient Pattern Vectors (`data/output/patient_pattern_vectors.ALL.csv`)
 
 Wide long format: one row per (PatientId, Pattern) with the following columns:
 
-- `tirp_count_unique_last` — horizontal support per patient using **unique_last** counting.
-- `tirp_count_all` — horizontal support per patient counting **all** embeddings.
-- `tpf_dist_unique_last` — min–max of `tirp_count_unique_last` across patients, per pattern.
-- `tpf_dist_all` — min–max of `tirp_count_all` across patients, per pattern.
-- `tpf_duration` — **union** of embedding spans per patient (no overlap double-counting), then min–max across patients, per pattern.
+- `tirp_count_unique_last` - horizontal support per patient using **unique_last** counting.
+- `tirp_count_all` - horizontal support per patient counting **all** embeddings.
+- `tpf_dist_unique_last` - min-max of `tirp_count_unique_last` across patients, per pattern.
+- `tpf_dist_all` - min-max of `tirp_count_all` across patients, per pattern.
+- `tpf_duration` - **union** of embedding spans per patient (no overlap double-counting), then min-max across patients, per pattern.
 
 >> Note: `tpf-*` values are normalized **per pattern** to [0,1] across the cohort.  
 >> Example for singletons: if `A` spans are `[1,2,1]` across patients, they normalize to `[0.0, 1.0, 0.0]`.
@@ -498,7 +504,7 @@ Memory usage is driven by:
 
 *These estimates assume **all possible patterns up to k=5 are frequent** (worst case) and **dense embeddings** per patient. Real workloads with `min_ver_supp > 0` will use significantly less memory.*
 
-| Temporal Entities | Relations | Patterns (≤k=5) | Patients | Est. RAM (Worst) | Recommendation |
+| Temporal Entities | Relations | Patterns (<=k=5) | Patients | Est. RAM (Worst) | Recommendation |
 |-------------------|-----------|-----------------|----------|------------------|----------------|
 | **20**            | 2         | ~67k            | 10k      | 8 GB             | Workstation OK. |
 | **20**            | 3         | ~130k           | 10k      | 12 GB            | Workstation OK. |
@@ -513,13 +519,13 @@ Memory usage is driven by:
 | **100**           | 5         | ~1.1B           | 10k      | 4+ TB            | **Must Split.** |
 | **100**           | 7         | ~2.8B           | 10k      | 8+ TB            | **Must Split.** |
 
->> **Important:** These are **theoretical worst-case** numbers assuming zero Apriori pruning. In practice, `min_ver_supp` will eliminate the vast majority of candidate patterns, reducing memory by 10–100×. Use this table to understand upper bounds, not typical usage.
+>> **Important:** These are **theoretical worst-case** numbers assuming zero Apriori pruning. In practice, `min_ver_supp` will eliminate the vast majority of candidate patterns, reducing memory by 10-100x. Use this table to understand upper bounds, not typical usage.
 
 **Pattern Count Formula (Worst Case):**
 For N temporal entities and R relations, patterns up to length k:
 $$\text{Patterns} = \sum_{i=1}^{k} \binom{N}{i} \times R^{i-1}$$
 
-For k=5, this grows as O(N⁵ × R⁴), which is why entity count and relation granularity are critical levers.
+For k=5, this grows as O(N^5 x R^4), which is why entity count and relation granularity are critical levers.
 
 **Mitigation Strategy:**
 If your data exceeds these limits, **do not run as a single job**.
@@ -535,7 +541,7 @@ If your data exceeds these limits, **do not run as a single job**.
 
 To upload this project to an external machine, create a self-contained zip that includes all source code and configuration but excludes unit-tests, cached bytecode, and data files (which should be uploaded separately or already present on the VM).
 
-**PowerShell (Windows) — run from the `KarmaLego\` root:**
+**PowerShell (Windows) - run from the `KarmaLego\` root:**
 
 ```powershell
 Compress-Archive -Force -Path `
@@ -557,4 +563,4 @@ pip install -e .
 ```
 
 `pip install -e .` registers `core` as a package in the environment (using the dependencies declared in `pyproject.toml`) so `from core.karmalego import ...` works from any working directory, including from inside Jupyter.  
-The first notebook cell runs this automatically — you only need to run it once after upload.
+The first notebook cell runs this automatically - you only need to run it once after upload.

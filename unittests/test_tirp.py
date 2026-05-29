@@ -227,13 +227,13 @@ def test_csac_prunes_non_adjacent_before_embedding():
 
     Entity layout (sorted by start time):
         pos 0: A (0,1)
-        pos 1: A (2,3)   ← intervening A between the first A and B
+        pos 1: A (2,3)   <- intervening A between the first A and B
         pos 2: B (5,6)
 
-    Without CSAC: two valid embeddings (0,2) and (1,2) → entity supports A<B.
+    Without CSAC: two valid embeddings (0,2) and (1,2) -> entity supports A<B.
     With CSAC:
-        - Embedding (0,2): position 1 is also A and 0 < 1 < 2 → SAC violation, pruned.
-        - Embedding (1,2): no A between position 1 and 2 → valid.
+        - Embedding (0,2): position 1 is also A and 0 < 1 < 2 -> SAC violation, pruned.
+        - Embedding (1,2): no A between position 1 and 2 -> valid.
     Either way the entity still supports A<B, but through ONE embedding only.
     The test verifies only SAC-compliant embeddings survive.
     """
@@ -264,14 +264,14 @@ def test_csac_rejects_entity_when_all_embeddings_violate():
 
     Entity layout:
         pos 0: A (0,1)
-        pos 1: A (2,3)   ← intervening A
-        pos 2: A (4,5)   ← intervening A
+        pos 1: A (2,3)   <- intervening A
+        pos 2: A (4,5)   <- intervening A
         pos 3: B (7,8)
 
     Candidate embeddings and their CSAC status:
-        (0,3): A at 1 and 2 are between 0 and 3 → violation
-        (1,3): A at 2 is between 1 and 3 → violation
-        (2,3): no A between 2 and 3 → VALID
+        (0,3): A at 1 and 2 are between 0 and 3 -> violation
+        (1,3): A at 2 is between 1 and 3 -> violation
+        (2,3): no A between 2 and 3 -> VALID
 
     Entity 0 is still supported through (2,3). But entity 1 (only one A, then B)
     is always valid. The case that would make an entity fully unsupported is when
@@ -279,7 +279,7 @@ def test_csac_rejects_entity_when_all_embeddings_violate():
     Test that below with a dedicated 'fully-violating' entity.
     """
     # An entity where the ONLY A is immediately before B but there are two A's
-    # where one acts as an interposer for the other — but one embedding is clean.
+    # where one acts as an interposer for the other - but one embedding is clean.
     entities_partial = [
         [(0, 1, "A"), (2, 3, "A"), (4, 5, "A"), (7, 8, "B")],  # entity 0: (2,3) is clean
         [(0, 1, "B")],                                            # entity 1: no A
@@ -295,14 +295,14 @@ def test_csac_rejects_entity_when_all_embeddings_violate():
     # Now a truly all-violating entity: only one B, and every A has a later A before B.
     #   pos 0: A (0,1), pos 1: A (3,4), pos 2: B (6,7)
     # Same as first two-A case: (0,2) violates, (1,2) is clean.
-    # → entity still supported. True "all-violating" is architecturally impossible
+    # -> entity still supported. True "all-violating" is architecturally impossible
     # unless B is reached only through positions where interposers always exist,
     # which requires the only valid last-A to itself have an interposer.
     # For A<B with only A symbols as interposers the last A before B is always clean.
     # So we test a MEETS variant: fully-structured violation impossible for '<' alone.
     # Instead verify subtler case: entity where B is unreachable via clean A.
-    # This is only achievable with the 's' or 'c' structure — not meaningful for '<'.
-    # Confirm: entity with three A's and B where last A has no interposer → supported.
+    # This is only achievable with the 's' or 'c' structure - not meaningful for '<'.
+    # Confirm: entity with three A's and B where last A has no interposer -> supported.
     entities_always_has_clean = [
         [(0, 1, "A"), (2, 3, "A"), (4, 5, "A"), (6, 7, "B")],
     ]
@@ -317,11 +317,11 @@ def test_csac_in_full_pipeline(tmp_path):
     End-to-end CSAC test via KarmaLego.discover_patterns.
 
     Entity 0: A(0,1), A(2,3), B(5,6)
-        → Non-adjacent embedding (A@0-1, B@5-6) is pruned by CSAC (A@2-3 sits between).
+        -> Non-adjacent embedding (A@0-1, B@5-6) is pruned by CSAC (A@2-3 sits between).
           Adjacent embedding (A@2-3, B@5-6) is valid; entity 0 still supports A<B.
     Entity 1: A(0,2), B(3,5)
-        → Single clean A<B embedding; trivially CSAC-compliant.
-    min_ver_supp = 0.5 → both entities must support A<B → vertical support = 1.0.
+        -> Single clean A<B embedding; trivially CSAC-compliant.
+    min_ver_supp = 0.5 -> both entities must support A<B -> vertical support = 1.0.
 
     Note: run_lego clears embeddings_map on every node for memory efficiency, so the
     pipeline TIRP objects cannot be used to inspect per-entity embedding tuples after

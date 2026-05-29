@@ -8,7 +8,7 @@ IMPORTANT DESIGN NOTE:
   - Intervals are always ordered by (start time, end time, concept).
   - Therefore, all relations are FORWARD-ONLY.
   - Inverse Allen relations (after, met-by, during, etc.) are never represented explicitly.
-  - “During” is implicitly handled as the inverse of “contains” via interval ordering.
+  - "During" is implicitly handled as the inverse of "contains" via interval ordering.
 
 READING THE TABLES:
   - Organized as explicit composition rules
@@ -30,13 +30,13 @@ AVAILABLE RELATION SETS
                      (MERGES: 'c', 's', 'f', '=')
 
     Coarsening rules:
-        - '<' (before)      → 'p'
-        - 'm' (meets)       → 'p'
-        - 'o' (overlaps)    → 'p'
-        - 'c' (contains)    → 'c'
-        - 's' (started-by)  → 'c'
-        - 'f' (finished-by) → 'c'
-        - '=' (equal)       → 'c'
+        - '<' (before)      -> 'p'
+        - 'm' (meets)       -> 'p'
+        - 'o' (overlaps)    -> 'p'
+        - 'c' (contains)    -> 'c'
+        - 's' (started-by)  -> 'c'
+        - 'f' (finished-by) -> 'c'
+        - '=' (equal)       -> 'c'
 
     Notes:
         - This is the most compact forward-only algebra: ordering/overlap collapse to 'p',
@@ -59,7 +59,7 @@ AVAILABLE RELATION SETS
     '='  : equal
 
   Notes:
-    - This is a forward-only subset of Allen’s interval algebra.
+    - This is a forward-only subset of Allen's interval algebra.
     - Inverse relations (after, met-by, during, etc.) are represented implicitly
       by interval ordering and relation direction.
     - This table is the semantic source of truth.
@@ -83,8 +83,8 @@ AVAILABLE RELATION SETS
            (UNCHANGED)
 
   Coarsening rules:
-    - 'm' (meets)        → '<'   (absorbed via epsilon-soft edges)
-    - '=' (equal)        → 'c'   (treated as degenerate containment)
+    - 'm' (meets)        -> '<'   (absorbed via epsilon-soft edges)
+    - '=' (equal)        -> 'c'   (treated as degenerate containment)
 
   Notes:
     - All relations are a strict subset of the 7-relation alphabet.
@@ -106,10 +106,10 @@ AVAILABLE RELATION SETS
            (MERGES: 'c', 's', 'f', '=')
 
   Coarsening rules:
-    - 'm' (meets)        → '<'
-    - 's' (started-by)  → 'c'
-    - 'f' (finished-by) → 'c'
-    - '=' (equal)       → 'c'
+    - 'm' (meets)        -> '<'
+    - 's' (started-by)  -> 'c'
+    - 'f' (finished-by) -> 'c'
+    - '=' (equal)       -> 'c'
 
   Notes:
     - Represents the minimal interval algebra that still distinguishes:
@@ -124,7 +124,7 @@ AVAILABLE RELATION SETS
 ---------------------------------------------------------------------
 
 USAGE:
-  Pass 'num_relations' ∈ {2, 3, 5, 7} when initializing KarmaLego.
+  Pass 'num_relations' in {2, 3, 5, 7} when initializing KarmaLego.
   The corresponding composition table is selected automatically.
 
 """
@@ -151,8 +151,8 @@ _transition_table_2 = {
 # ============================================================================
 # 3-RELATION COMPOSITION TABLE (Minimal: before, overlaps, contains)
 # Coarsened from 7-relation table by merging:
-#   '<' and 'm' → '<'
-#   'c', 's', 'f', '=' → 'c'
+#   '<' and 'm' -> '<'
+#   'c', 's', 'f', '=' -> 'c'
 # ============================================================================
 _transition_table_3 = {
     # A < B, B < C  =>  A < C
@@ -180,8 +180,8 @@ _transition_table_3 = {
 # ============================================================================
 # 5-RELATION COMPOSITION TABLE (Intermediate: before, overlaps, contains, started-by, finished-by)
 # Coarsened from 7-relation table by merging:
-#   '<' and 'm' → '<'
-#   '=' → 'c'
+#   '<' and 'm' -> '<'
+#   '=' -> 'c'
 # ============================================================================
 _transition_table_5 = {
     # A < B, B < C  =>  A < C

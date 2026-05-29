@@ -18,9 +18,9 @@ def small_tree():
     """
     Build a small tree:
         root
-         ├── A (TIRP k=1)
-         │     └── A1 (TIRP k=2)
-         └── B (TIRP k=1)
+         +-- A (TIRP k=1)
+         |     +-- A1 (TIRP k=2)
+         +-- B (TIRP k=1)
     """
     root = TreeNode(data="root")
     tirp_a = DummyTIRP("A", vertical_support=0.9, k=1)
