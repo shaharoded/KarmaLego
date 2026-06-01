@@ -2,3 +2,8 @@ pandas
 dask[dataframe]
 tqdm
 numpy
+scikit-learn
+xgboost
+optuna
+matplotlib
+shap

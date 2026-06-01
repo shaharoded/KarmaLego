@@ -8,6 +8,8 @@ Based on the paper:
 
 This implementation is designed to be used as an temporal analysis and feature extraction tool in my thesis.
 
+Latest MIMIC-IV multi-label prediction results are summarized in [RESULTS.md](RESULTS.md).
+
 ## How KarmaLego Works
 
 KarmaLego mines **frequent time-interval relation patterns (TIRPs)** by combining two key stages:

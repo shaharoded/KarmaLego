@@ -148,6 +148,28 @@ def _apply_patterns_patient_worker(args):
     return pid, patient_values
 
 
+def _apply_patterns_patient_worker_dual(args):
+    """
+    Compute raw tirp-count and tpf-duration values for one patient in one pass.
+    Returns (patient_id, count_values, duration_values).
+    """
+    pid, precomp_entry, patterns_list, count_strategy, epsilon, max_distance = args
+    ti, syms, sym_idx = precomp_entry
+    count_values = {}
+    duration_values = {}
+
+    for tirp in patterns_list:
+        emb = _valid_embeddings_for_apply(tirp, ti, syms, sym_idx, epsilon, max_distance)
+        if not emb:
+            continue
+
+        key = (tuple(tirp.symbols), tuple(tirp.relations))
+        count_values[key] = _horizontal_support_from_embeddings_for_apply(emb, count_strategy)
+        duration_values[key] = _union_span_from_embeddings_for_apply(emb, ti)
+
+    return pid, count_values, duration_values
+
+
 class TreeNode:
     """
     General-purpose tree node for enumerated TIRPs (or any pattern-like objects).
@@ -1131,6 +1153,232 @@ class KarmaLego:
                         values[pid][pat] = 0.0
 
         return values
+
+    def apply_patterns_to_entities_dual(
+        self,
+        entity_list,
+        patterns,
+        patient_ids,
+        count_strategy: str = "unique_last",
+        n_jobs: int = 1,
+        show_progress: bool = True,
+    ):
+        """
+        Build both tirp-count and tpf-duration features in one traversal over the embeddings.
+
+        Returns
+        -------
+        tuple[dict, dict]
+            (count_values, duration_values), each mapping patient_id -> {pattern_key: value}.
+        """
+        if hasattr(patterns, "itertuples") or isinstance(patterns, pd.DataFrame):
+            cols = set(patterns.columns)
+            if "tirp_obj" in cols:
+                tirp_objs = list(patterns["tirp_obj"])
+                if any(t is not None for t in tirp_objs):
+                    patterns_list = [t for t in tirp_objs if t is not None]
+                elif {"symbols", "relations"}.issubset(cols):
+                    patterns_list = []
+                    for row in patterns.itertuples(index=False):
+                        syms = row.symbols
+                        rels = row.relations
+                        if isinstance(syms, str):
+                            syms = literal_eval(syms)
+                        if isinstance(rels, str):
+                            rels = literal_eval(rels)
+                        patterns_list.append(
+                            TIRP(
+                                epsilon=self.epsilon,
+                                max_distance=self.max_distance,
+                                min_ver_supp=self.min_ver_supp,
+                                symbols=list(syms),
+                                relations=list(rels),
+                                k=len(syms),
+                            )
+                        )
+                else:
+                    raise ValueError("DataFrame must contain either 'tirp_obj' or both 'symbols' and 'relations'.")
+            elif {"symbols", "relations"}.issubset(cols):
+                patterns_list = []
+                for row in patterns.itertuples(index=False):
+                    syms = row.symbols
+                    rels = row.relations
+                    if isinstance(syms, str):
+                        syms = literal_eval(syms)
+                    if isinstance(rels, str):
+                        rels = literal_eval(rels)
+                    patterns_list.append(
+                        TIRP(
+                            epsilon=self.epsilon,
+                            max_distance=self.max_distance,
+                            min_ver_supp=self.min_ver_supp,
+                            symbols=list(syms),
+                            relations=list(rels),
+                            k=len(syms),
+                        )
+                    )
+            else:
+                raise ValueError("DataFrame must contain either 'tirp_obj' or both 'symbols' and 'relations'.")
+        elif isinstance(patterns, (list, tuple)):
+            patterns_list = list(patterns)
+        else:
+            raise ValueError("Unsupported patterns container")
+
+        precomp = []
+        for ent in entity_list:
+            lexi = lexicographic_sorting(ent)
+            ti = [(s, e) for s, e, _ in lexi]
+            syms = [sym for _, _, sym in lexi]
+            sym_idx: dict = {}
+            for pos, sym in enumerate(syms):
+                sym_idx.setdefault(sym, []).append(pos)
+            precomp.append((ti, syms, sym_idx))
+
+        n_patients = len(patient_ids)
+        count_values = {pid: defaultdict(float) for pid in patient_ids}
+        duration_values = {pid: defaultdict(float) for pid in patient_ids}
+        maxs: dict = {}
+        mins: dict = {}
+        hit_counts: dict = {}
+
+        def _record_patient_values(pid, patient_counts, patient_durations):
+            for key, val in patient_counts.items():
+                count_values[pid][key] = val
+            for key, val in patient_durations.items():
+                duration_values[pid][key] = val
+                if val > maxs.get(key, 0):
+                    maxs[key] = val
+                if key not in mins or val < mins[key]:
+                    mins[key] = val
+                hit_counts[key] = hit_counts.get(key, 0) + 1
+
+        worker_args = [
+            (pid, entry, patterns_list, count_strategy, self.epsilon, self.max_distance)
+            for pid, entry in zip(patient_ids, precomp)
+        ]
+
+        if n_jobs is None:
+            n_jobs = os.cpu_count() or 1
+        n_jobs = max(1, min(int(n_jobs), len(worker_args) if worker_args else 1))
+
+        if n_jobs == 1:
+            iterator = tqdm(worker_args, desc="Applying patterns to patients", disable=not show_progress)
+            for args in iterator:
+                pid, patient_counts, patient_durations = _apply_patterns_patient_worker_dual(args)
+                _record_patient_values(pid, patient_counts, patient_durations)
+        else:
+            try:
+                with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+                    futures = [executor.submit(_apply_patterns_patient_worker_dual, args) for args in worker_args]
+                    iterator = tqdm(as_completed(futures), total=len(futures),
+                                    desc="Applying patterns to patients", disable=not show_progress)
+                    for future in iterator:
+                        pid, patient_counts, patient_durations = future.result()
+                        _record_patient_values(pid, patient_counts, patient_durations)
+            except (OSError, PermissionError):
+                iterator = tqdm(worker_args, desc="Applying patterns to patients", disable=not show_progress)
+                for args in iterator:
+                    pid, patient_counts, patient_durations = _apply_patterns_patient_worker_dual(args)
+                    _record_patient_values(pid, patient_counts, patient_durations)
+
+        if n_patients:
+            for pid in patient_ids:
+                if not duration_values[pid]:
+                    continue
+                for pat in list(duration_values[pid].keys()):
+                    hi = maxs.get(pat, 0)
+                    lo = mins[pat] if hit_counts.get(pat, 0) == n_patients else 0
+                    if hi > lo:
+                        duration_values[pid][pat] = (duration_values[pid][pat] - lo) / (hi - lo)
+                    else:
+                        duration_values[pid][pat] = 0.0
+
+        return count_values, duration_values
+
+    def apply_patterns_to_entities_multi(
+        self,
+        entity_list,
+        patterns,
+        patient_ids,
+        modes=("tirp-count", "tpf-dist", "tpf-duration"),
+        count_strategy: str = "unique_last",
+        n_jobs: int = 1,
+        show_progress: bool = True,
+    ):
+        """
+        Build multiple feature strategies in one call.
+
+        Supported modes:
+          - tirp-count
+          - tpf-dist
+          - tpf-duration
+
+        Returns
+        -------
+        dict[str, dict]
+            Mapping from requested mode to patient_id -> {pattern_key: value}.
+        """
+        if modes is None:
+            modes = ("tirp-count", "tpf-dist", "tpf-duration")
+        modes = tuple(dict.fromkeys(modes))
+        if len(modes) > 5:
+            raise ValueError(f"At most 5 modes are supported, got {len(modes)}")
+
+        allowed = {"tirp-count", "tpf-dist", "tpf-duration"}
+        invalid = [m for m in modes if m not in allowed]
+        if invalid:
+            raise ValueError(f"Unsupported modes: {invalid}. Allowed: {sorted(allowed)}")
+
+        outputs = {}
+        if not modes:
+            return outputs
+
+        # Reuse the dual pass so count and duration are collected from one embedding search.
+        count_values, duration_values = self.apply_patterns_to_entities_dual(
+            entity_list,
+            patterns,
+            patient_ids,
+            count_strategy=count_strategy,
+            n_jobs=n_jobs,
+            show_progress=show_progress,
+        )
+
+        if "tirp-count" in modes:
+            outputs["tirp-count"] = count_values
+
+        if "tpf-duration" in modes:
+            outputs["tpf-duration"] = duration_values
+
+        if "tpf-dist" in modes:
+            n_patients = len(patient_ids)
+            dist_values = {pid: defaultdict(float) for pid in patient_ids}
+            maxs: dict = {}
+            mins: dict = {}
+            hit_counts: dict = {}
+
+            for pid in patient_ids:
+                for key, val in count_values.get(pid, {}).items():
+                    dist_values[pid][key] = val
+                    if val > maxs.get(key, 0):
+                        maxs[key] = val
+                    if key not in mins or val < mins[key]:
+                        mins[key] = val
+                    hit_counts[key] = hit_counts.get(key, 0) + 1
+
+            for pid in patient_ids:
+                if not dist_values[pid]:
+                    continue
+                for pat in list(dist_values[pid].keys()):
+                    hi = maxs.get(pat, 0)
+                    lo = mins[pat] if hit_counts.get(pat, 0) == n_patients else 0
+                    if hi > lo:
+                        dist_values[pid][pat] = (dist_values[pid][pat] - lo) / (hi - lo)
+                    else:
+                        dist_values[pid][pat] = 0.0
+
+            outputs["tpf-dist"] = dist_values
+
+        return outputs
 
     @staticmethod
     def _build_level2_index(tree):
