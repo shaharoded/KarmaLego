@@ -6,9 +6,28 @@ Based on the paper:
 *Moskovitch, Robert, and Yuval Shahar. "Temporal Patterns Discovery from Multivariate Time Series via Temporal Abstraction and Time-Interval Mining."*  
 (See [original](https://pmc.ncbi.nlm.nih.gov/articles/PMC2815492/) for theoretical grounding.)
 
-This implementation is designed to be used as an temporal analysis and feature extraction tool in my thesis.
+This implementation is designed to be used as a temporal analysis and feature extraction tool in my thesis.
 
 Latest MIMIC-IV multi-label prediction results are summarized in [RESULTS.md](RESULTS.md).
+
+## Benchmark Prediction Results
+
+The current MIMIC-IV benchmark uses KarmaLego patterns as sparse features for a six-outcome multi-label prediction task. For each admission, temporal features are built from the first 48 hours and labels are future outcome events after that 48-hour window. The benchmark model is intentionally simple: one-vs-rest logistic regression with balanced class weights, used as a comparator rather than the thesis-main model.
+
+The pipeline discovered 207,439 deduplicated shared TIRPs across outcome-specific runs. After filtering to minimum vertical support >= 0.20, 29,757 shared patterns remained, producing 35,982 cached TIRP feature columns over 57,078 patients. Variance filtering then selected 15,928 model columns, almost all of them TIRP count features.
+
+Across three held-out split seeds, the benchmark reached:
+
+| Metric | Mean +/- SD |
+|---|---:|
+| Micro PR-AUC | 0.609 +/- 0.002 |
+| Macro PR-AUC | 0.495 +/- 0.005 |
+| Micro ROC-AUC | 0.852 +/- 0.001 |
+| Macro ROC-AUC | 0.810 +/- 0.002 |
+| Micro F1 at 0.5 | 0.573 +/- 0.002 |
+| Macro F1 at 0.5 | 0.486 +/- 0.004 |
+
+The strongest PR-AUC results were for hyperglycemia, hyperosmolality, and kidney complications. Rarer outcomes such as hypoglycemia and cardiovascular disorder had lower PR-AUC but still meaningful ROC-AUC, which is expected under strong class imbalance. Linear SHAP-style attribution shows that the model mainly relies on clinically plausible temporal count patterns, including glucose, sodium, urea, creatinine, potassium, infection-WBC, platelet, and admission-context patterns, with age/admission type/hypertension contributing for death, cardiovascular, and kidney outcomes.
 
 ## How KarmaLego Works
 
