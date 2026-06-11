@@ -24,6 +24,7 @@ data/output/
 *.npy
 *.parquet
 *.feather
+*.zip
 
 # Jupyter
 .ipynb_checkpoints/

@@ -7,3 +7,5 @@ xgboost
 optuna
 matplotlib
 shap
+joblib
+scipy
